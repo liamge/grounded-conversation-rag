@@ -1,0 +1,2 @@
+# Prefer installing via `pip install .` from pyproject.toml; this keeps legacy workflows working.
+-e .

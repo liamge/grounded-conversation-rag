@@ -1,0 +1,2 @@
+# Dev install with linting, coverage, evaluation, and dense retrieval extras
+-e .[dev,eval,dense]

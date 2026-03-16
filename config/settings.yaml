@@ -1,0 +1,46 @@
+# config/settings.yaml
+data:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  embeddings_dir: data/embeddings
+  eval_path: data/eval/eval_set.jsonl
+
+retrieval:
+  chunk_size: 512
+  chunk_overlap: 64
+  top_k: 5
+  min_score: 0.0
+  bm25_k1: 1.6
+  bm25_b: 0.75
+  hybrid_weight_dense: 0.5
+  hybrid_weight_lexical: 0.5
+  use_reranker: true
+  reranker_top_n: 10
+
+models:
+  embedding_model: sentence-transformers/all-MiniLM-L6-v2
+  reranker_model: cross-encoder/ms-marco-MiniLM-L-6-v2
+  llm_model: gpt-4o-mini
+  llm_provider: openai
+  # Note: the OpenAI client reads OPENAI_API_KEY from the environment; no key is stored in config.
+
+output:
+  artifacts_dir: artifacts
+  reports_dir: reports
+  cache_dir: .cache
+  logs_dir: logs
+
+logging:
+  level: INFO
+  log_file: logs/app.log
+  json_logs: false
+  propagate: false
+
+app:
+  title: Grounded Conversation RAG
+  default_retriever: hybrid   # options: lexical/bm25/tfidf/dense/hybrid
+  host: 0.0.0.0
+  port: 8501
+  debug: false
+  max_history_turns: 3
+  enable_feedback: false

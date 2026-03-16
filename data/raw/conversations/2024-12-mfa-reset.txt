@@ -1,0 +1,12 @@
+Title: MFA reset with security verification
+Doc ID: conv-mfa-reset-2024-12
+Source: Slack triage #cs-1391
+
+[Customer] Our admin lost their phone and is locked out due to MFA. Can you reset it?
+[Agent] We can, but we have to verify ownership first. What is the primary billing email on the account?
+[Customer] billing@starlake.io.
+[Agent] Thank you. Please also confirm the last 4 digits of the payment card and the city from which the last successful login originated.
+[Customer] Card ends in 2241, last login was from Denver.
+[Agent] Verified. I’m issuing a temporary MFA bypass valid for 15 minutes. The admin should log in, go to Security > MFA, and enroll a new device immediately.
+[Customer] Done. Anything else?
+[Agent] I’ve added a note to require a fresh backup code download and rotated API tokens per policy.

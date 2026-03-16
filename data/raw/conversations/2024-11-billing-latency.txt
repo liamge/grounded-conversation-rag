@@ -1,0 +1,13 @@
+Title: Billing portal export latency
+Doc ID: conv-billing-latency-2024-11
+Source: Zendesk ticket #48291
+
+[Customer] The "Download PDF" button in the invoice portal is spinning for more than 20 seconds. Our finance team needs the November invoice today.
+[Agent] Sorry about the slowdown. We have a known cache issue on invoice PDFs. It only affects large accounts in us-east.
+[Customer] Can you pull the invoice for us? Deadline is in 2 hours.
+[Agent] Yes. Meanwhile, please use the CSV export to get the line items immediately. Click "Export" > "CSV". That route is not impacted.
+[Customer] We also need the stamped PDF.
+[Agent] I’ll generate it via the internal batch job and attach here. You’ll see it within 15 minutes. Tracking as incident INC-482.
+[Agent] For future cases, warming the cache by opening the invoice detail page first often brings the PDF render under 5 seconds.
+[Customer] Thanks. Please let us know when it’s ready.
+[Agent] Understood. SLA for P2 like this is 1 business hour to mitigation; I’ve started the workaround now.
