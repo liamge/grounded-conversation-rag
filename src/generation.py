@@ -3,8 +3,9 @@
 This module keeps answer generation provider‑agnostic while enforcing
 grounding requirements:
 
-* Retrieve context is assembled with a character budget to avoid overly
-  long prompts.
+* Retrieved context is assembled with a token budget (approximate word
+  tokens) to avoid overly long prompts, truncating oversized chunks
+  rather than skipping them.
 * Prompts require chunk‑level citations (``[chunk_id]``) and abstention
   when evidence is insufficient.
 * A provider interface allows plugging in OpenAI or other chat models,
@@ -14,7 +15,7 @@ grounding requirements:
 from __future__ import annotations
 
 import os
-from typing import Any, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .config import Settings
 from .schemas import GeneratedAnswer, RetrievalResult
@@ -27,31 +28,110 @@ DEFAULT_CONTEXT_CHARS = 2_400
 # ---------------------------------------------------------------------------
 
 
-def assemble_context(results: Sequence[RetrievalResult], max_chars: int = DEFAULT_CONTEXT_CHARS) -> str:
-    """Format retrieved chunks into a prompt-ready context block.
+def _tokenize(text: str) -> List[str]:
+    """Lightweight whitespace tokenizer used for budget accounting."""
 
-    Chunks are appended in rank order until ``max_chars`` is reached. Each
-    block includes the chunk id (for citations), title, and source so models
-    can reference them explicitly.
+    return [tok for tok in text.replace("\n", " ").split(" ") if tok]
+
+
+def assemble_context_with_budget(
+    chunks: Sequence[RetrievalResult], max_tokens: int = DEFAULT_CONTEXT_CHARS
+) -> Tuple[str, List[str], Dict[str, Any]]:
+    """Assemble context under a token budget with truncation metadata.
+
+    Args:
+        chunks: Retrieval results ordered by relevance (already ranked).
+        max_tokens: Rough token budget (whitespace-delimited words). A minimum
+            of one token is enforced when chunks exist so the context is never
+            empty.
+
+    Returns:
+        context_text: The assembled context string.
+        used_chunk_ids: Chunk ids included (for citation mapping).
+        truncation_metadata: Stats about truncation/dropping decisions.
     """
 
-    lines: List[str] = []
-    remaining = max_chars
+    if not chunks:
+        return "", [], {
+            "budget_tokens": max_tokens,
+            "effective_budget_tokens": max_tokens,
+            "used_tokens": 0,
+            "truncated_chunks": [],
+            "dropped_chunks": [],
+        }
 
-    for res in results:
+    effective_budget = max(max_tokens, 1)
+    remaining = effective_budget
+
+    context_blocks: List[str] = []
+    used_chunk_ids: List[str] = []
+    truncated_chunks: List[Dict[str, int]] = []
+    dropped_chunks: List[str] = []
+
+    for idx, res in enumerate(chunks):
+        if remaining <= 0 and used_chunk_ids:
+            dropped_chunks.extend(r.chunk.chunk_id for r in chunks[idx:])
+            break
+
         chunk = res.chunk
         header = f"[{chunk.chunk_id}] {chunk.title or 'Untitled'} — {chunk.source}"
         body = chunk.text.strip()
-        entry = f"{header}\n{body}"
 
-        entry_len = len(entry) + 2  # include spacing
-        if entry_len > remaining:
-            break
+        header_tokens = _tokenize(header)
+        body_tokens = _tokenize(body)
+        original_tokens = len(header_tokens) + len(body_tokens)
 
-        lines.append(entry)
-        remaining -= entry_len
+        tokens_allowed = remaining
+        header_slice = header_tokens[:tokens_allowed]
+        tokens_used = len(header_slice)
+        tokens_allowed -= tokens_used
 
-    return "\n\n".join(lines)
+        body_slice: List[str] = []
+        if tokens_allowed > 0:
+            body_slice = body_tokens[:tokens_allowed]
+            tokens_used += len(body_slice)
+            tokens_allowed -= len(body_slice)
+
+        if not header_slice and not body_slice:
+            # Should only happen if effective_budget == 0, which we guard above.
+            continue
+
+        block_header = " ".join(header_slice).strip()
+        block_body = " ".join(body_slice).strip()
+        block_text = block_header if not block_body else f"{block_header}\n{block_body}"
+
+        context_blocks.append(block_text)
+        used_chunk_ids.append(chunk.chunk_id)
+        remaining = max(remaining - tokens_used, 0)
+
+        if tokens_used < original_tokens:
+            truncated_chunks.append(
+                {
+                    "chunk_id": chunk.chunk_id,
+                    "original_tokens": original_tokens,
+                    "included_tokens": tokens_used,
+                }
+            )
+
+    used_tokens = effective_budget - remaining
+    context_text = "\n\n".join(context_blocks)
+
+    truncation_metadata = {
+        "budget_tokens": max_tokens,
+        "effective_budget_tokens": effective_budget,
+        "used_tokens": used_tokens,
+        "truncated_chunks": truncated_chunks,
+        "dropped_chunks": dropped_chunks,
+    }
+
+    return context_text, used_chunk_ids, truncation_metadata
+
+
+def assemble_context(results: Sequence[RetrievalResult], max_chars: int = DEFAULT_CONTEXT_CHARS) -> str:
+    """Backward-compatible wrapper returning only the context text."""
+
+    context_text, _, _ = assemble_context_with_budget(results, max_tokens=max_chars)
+    return context_text
 
 
 def format_grounded_prompt(
@@ -60,6 +140,7 @@ def format_grounded_prompt(
     *,
     max_context_chars: int = DEFAULT_CONTEXT_CHARS,
     system_instruction: Optional[str] = None,
+    context_block: Optional[str] = None,
 ) -> str:
     """Build the full prompt for grounded generation.
 
@@ -69,7 +150,8 @@ def format_grounded_prompt(
     * concise, direct answers
     """
 
-    context_block = assemble_context(retrieved, max_chars=max_context_chars)
+    if context_block is None:
+        context_block, _, _ = assemble_context_with_budget(retrieved, max_tokens=max_context_chars)
 
     system_instruction = system_instruction or (
         "You are a grounded assistant. Use ONLY the provided context to answer. "
@@ -141,8 +223,16 @@ class OpenAIChatGenerator(BaseGenerator):
         max_context_chars: int = DEFAULT_CONTEXT_CHARS,
         system_instruction: Optional[str] = None,
     ) -> GeneratedAnswer:
+        context_block, used_chunk_ids, truncation_metadata = assemble_context_with_budget(
+            retrieved, max_tokens=max_context_chars
+        )
+
         prompt = format_grounded_prompt(
-            question, retrieved, max_context_chars=max_context_chars, system_instruction=system_instruction
+            question,
+            retrieved,
+            max_context_chars=max_context_chars,
+            system_instruction=system_instruction,
+            context_block=context_block,
         )
 
         messages = [
@@ -164,9 +254,10 @@ class OpenAIChatGenerator(BaseGenerator):
             answer=answer_text,
             citations=citations,
             prompt=prompt,
-            context=assemble_context(retrieved, max_context_chars),
+            context=context_block,
             provider=self.name,
             model=self.model,
+            metadata={"context_chunks": used_chunk_ids, "truncation": truncation_metadata},
         )
 
 
@@ -190,11 +281,17 @@ class DeterministicFallbackGenerator(BaseGenerator):
         max_context_chars: int = DEFAULT_CONTEXT_CHARS,
         system_instruction: Optional[str] = None,
     ) -> GeneratedAnswer:
-        prompt = format_grounded_prompt(
-            question, retrieved, max_context_chars=max_context_chars, system_instruction=system_instruction
+        context_block, used_chunk_ids, truncation_metadata = assemble_context_with_budget(
+            retrieved, max_tokens=max_context_chars
         )
 
-        context_block = assemble_context(retrieved, max_context_chars)
+        prompt = format_grounded_prompt(
+            question,
+            retrieved,
+            max_context_chars=max_context_chars,
+            system_instruction=system_instruction,
+            context_block=context_block,
+        )
 
         if not retrieved:
             abstain = "I don't have enough evidence to answer confidently."
@@ -205,6 +302,7 @@ class DeterministicFallbackGenerator(BaseGenerator):
                 context=context_block,
                 provider=self.name,
                 model=self.model,
+                metadata={"context_chunks": used_chunk_ids, "truncation": truncation_metadata},
             )
 
         top_chunk = retrieved[0].chunk
@@ -218,6 +316,7 @@ class DeterministicFallbackGenerator(BaseGenerator):
             context=context_block,
             provider=self.name,
             model=self.model,
+            metadata={"context_chunks": used_chunk_ids, "truncation": truncation_metadata},
         )
 
 
@@ -280,4 +379,5 @@ __all__ = [
     "DeterministicFallbackGenerator",
     "build_generator",
     "generate_answer",
+    "assemble_context_with_budget",
 ]

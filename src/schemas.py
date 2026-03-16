@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, Iterable, List, Optional, Sequence, Union
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +98,7 @@ class GeneratedAnswer:
     context: str
     provider: str
     model: str
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -107,6 +108,7 @@ class GeneratedAnswer:
             "context": self.context,
             "provider": self.provider,
             "model": self.model,
+            "metadata": dict(self.metadata),
         }
 
 
