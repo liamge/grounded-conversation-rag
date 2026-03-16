@@ -1,268 +1,107 @@
-# Grounded Conversation Intelligence RAG
+# Grounded Conversation RAG
 
-A production‑style Retrieval Augmented Generation (RAG) system designed to answer questions about internal conversations, policies, and operational documentation with **grounded citations and measurable retrieval quality improvements**.
-
-This repository demonstrates how to design, evaluate, and monitor a modern RAG system rather than simply calling an LLM with embedded documents.
-
-The project focuses on:
-
-* Retrieval quality
-* Grounded answer generation
-* Quantitative evaluation
-* Production monitoring
-
-The goal is to show **end‑to‑end AI system design**, not just prompt engineering.
+Portfolio‑ready RAG system that ingests internal conversations + policies, runs lexical/dense/hybrid retrieval with optional reranking, and serves grounded answers with citations via a Streamlit demo. The codebase is fully runnable (no placeholder notebooks) and ships with a small synthetic corpus plus an evaluation set.
 
 ---
 
-# Project Overview
+## Quickstart (reproducible)
+- `python -m venv .venv && source .venv/bin/activate`
+- `pip install -e .` for the minimal stack, or `pip install -e ".[dev,eval,dense]"` to include tests, OpenAI, FAISS, and evaluation extras.
+- Set `OPENAI_API_KEY` if you want live LLM answers; otherwise a deterministic fallback generator is used.
+- Optional: set `RAG_DISABLE_DENSE=1` to skip downloading sentence-transformers weights on first run.
 
-Modern RAG systems fail most often because of poor retrieval rather than weak LLMs.
-
-This project explores how improvements in retrieval architecture improve answer quality.
-
-We implement and compare several system variants:
-
-| Variant           | Description                                      |
-| ----------------- | ------------------------------------------------ |
-| Baseline          | Lexical retrieval (TF‑IDF / BM25 style)          |
-| Dense             | Embedding retrieval using sentence transformers  |
-| Hybrid            | Combined lexical + dense retrieval               |
-| Hybrid + Reranker | Hybrid retrieval followed by relevance reranking |
-
-Each system is evaluated using retrieval metrics and answer quality checks.
+Data paths, chunking parameters, models, and app settings live in `config/settings.yaml` and can be overridden via env vars (e.g., `RAG_APP__PORT=8080`).
 
 ---
 
-# Architecture
-
-```
-Documents / transcripts
-        ↓
-Cleaning + chunking
-        ↓
-Metadata enrichment
-        ↓
-Indexing
-        ↓
-Retrieval
-   (lexical / dense / hybrid)
-        ↓
-Reranking
-        ↓
-Context assembly
-        ↓
-LLM generation
-        ↓
-Evaluation + monitoring
-```
-
-The system emphasizes **retrieval correctness and observability**, two components frequently missing from typical RAG tutorials.
+## What’s implemented
+- **Ingestion (`src/ingestion.py`)**: loads `.txt`, `.md`, `.json`, `.jsonl`; normalizes text; deterministic document IDs.
+- **Chunking (`src/chunking.py`)**: sentence-aware splitter with overlap and stable `chunk_id`s.
+- **Retrieval (`src/retrieval.py`)**: TF‑IDF, BM25, dense (MiniLM), hybrid fusion, optional FAISS caching; score normalization built for benchmarking.
+- **Reranking (`src/reranking.py`)**: lightweight keyword-overlap heuristic toggleable per query.
+- **Grounded generation (`src/generation.py`)**: context budget, citation-enforcing prompt, abstention guard, OpenAI provider with deterministic fallback.
+- **Pipeline orchestrator (`src/pipeline.py`)**: single entrypoint to load corpus → index → retrieve → (re)rank → generate → emit `PipelineResult` + trace.
+- **Evaluation (`src/evaluation.py`)**: Recall@k, Precision@k, MRR, citation coverage, evidence overlap, abstention checks; `data/eval/eval_set.jsonl` ships with gold pairs.
+- **Monitoring (`src/monitoring.py`)**: per-query telemetry + aggregates; writes CSV summaries to `reports/`.
+- **Streamlit demo (`src/app.py`)**: polished UI with retrieval mode selector, rerank toggle, chunk inspector, live latency metrics, and session benchmarks.
+- **CLIs (`scripts/`)**: `smoke_generate.py` (sanity check), `build_embeddings.py` (precompute dense + FAISS), `run_retrieval_benchmark.py` (toy Recall/MRR comparison).
 
 ---
 
-# Repository Structure
-
+## Run the demo
+```bash
+source .venv/bin/activate
+streamlit run src/app.py
 ```
-grounded_conversation_rag/
-
-README.md
-
-notebooks/
-    01_baseline_rag.ipynb
-    02_hybrid_retrieval.ipynb
-    03_reranking.ipynb
-    04_evaluation.ipynb
-    05_monitoring_demo.ipynb
-
-src/
-    config.py
-    ingestion.py
-    chunking.py
-    retrieval.py
-    reranking.py
-    generation.py
-    evaluation.py
-    monitoring.py
-
-data/
-    raw/
-    processed/
-    eval/
-
-tests/
-
-reports/
-    benchmark_results.csv
-    error_analysis.md
-    architecture.png
-```
+Open http://localhost:8501. The sidebar shows latency + citation counts; the main panel surfaces grounded answers and retrieved chunks. Set `OPENAI_API_KEY` for model-backed answers or rely on the deterministic fallback.
 
 ---
 
-# Key Concepts Demonstrated
-
-## Retrieval Evaluation
-
-Retrieval is evaluated separately from generation using:
-
-* Recall@k
-* Mean Reciprocal Rank (MRR)
-* Retrieval error inspection
-
-Understanding retrieval failure modes is critical for building reliable RAG systems.
-
----
-
-## Grounded Answer Generation
-
-The generator is constrained to answer **only from retrieved context**.
-
-The prompt template enforces:
-
-* citation of source chunks
-* abstention when evidence is weak
-* grounded reasoning
+## Run quick checks
+- **Smoke test (no external keys needed):**
+  ```bash
+  python scripts/smoke_generate.py
+  ```
+- **Toy retrieval benchmark:**
+  ```bash
+  python scripts/run_retrieval_benchmark.py --no-dense   # skip embeddings download
+  ```
+- **Precompute dense embeddings + FAISS cache:**
+  ```bash
+  python scripts/build_embeddings.py --config config/settings.yaml
+  ```
+- **Unit tests:** `pytest`
 
 ---
 
-## Evaluation Framework
-
-The project includes a small gold evaluation dataset containing:
-
-* query
-* ideal answer
-* relevant documents
-* required facts
-* forbidden claims
-
-Evaluation measures:
-
-* answer relevance
-* groundedness
-* citation coverage
+## Data + evaluation assets
+- Corpus lives in `data/raw/` (policies, operations runbooks, support conversations). All loaders accept txt/md/json/jsonl so you can drop in new sources.
+- Gold eval set at `data/eval/eval_set.jsonl` with queries, expected answers, and relevant chunk IDs for retrieval + groundedness checks.
+- Generated artifacts, telemetry, and reports are written to `artifacts/`, `logs/`, and `reports/` (created automatically).
 
 ---
 
-## Monitoring
+## Architecture at a glance
+```
+raw docs → ingest → chunk → index (tfidf | bm25 | dense | hybrid)
+               ↓                     ↓
+         metadata-rich chunks   optional rerank
+               ↓                     ↓
+        context assembly → grounded prompt → generator → citations/abstention
+                                        ↓
+                      telemetry (latency, scores, citations) → reports/
+```
 
-Production‑style monitoring signals are simulated:
-
-* latency
-* retrieval score distribution
-* citation rate
-* abstention rate
-* token cost
-
-Monitoring helps detect degradation before users notice failures.
+Design choices:
+- Keep retrievers small/testable; hybrids fuse normalized scores for clarity in benchmarks.
+- Deterministic chunk/document IDs to make eval + caching repeatable.
+- Provider-agnostic generation with a strict citation/abstention contract so demos work even without API keys.
+- Config-first: YAML + env overrides; defaults safe for laptops, flags to disable heavy components.
 
 ---
 
-# Example Results
-
-Example benchmark comparison:
-
-| Variant           | Recall@5 | MRR  | Faithfulness | Avg Latency |
-| ----------------- | -------- | ---- | ------------ | ----------- |
-| Baseline lexical  | 0.61     | 0.49 | 0.72         | 0.8s        |
-| Dense retrieval   | 0.68     | 0.56 | 0.76         | 1.0s        |
-| Hybrid retrieval  | 0.78     | 0.66 | 0.84         | 1.2s        |
-| Hybrid + reranker | 0.82     | 0.73 | 0.88         | 1.7s        |
-
-*Numbers are illustrative; reproduce by running the notebooks.*
+## Repository layout (actual)
+- `src/` — pipeline, retrieval, reranking, generation, config, schemas, telemetry, Streamlit app
+- `scripts/` — embeddings builder, toy benchmark, smoke generation
+- `data/raw/` — sample corpus; `data/eval/` — gold set; `data/downloads/` placeholder for new corpora
+- `config/settings.yaml` — defaults for paths/models/app
+- `tests/` — chunking, ingestion, retrieval, monitoring tests
+- `Dockerfile` + `docker-compose.yml` — containerized Streamlit app (`docker compose up app`)
 
 ---
 
-# Running the Project
-
-## Install dependencies
-
-```
-pip install pandas numpy scikit-learn sentence-transformers matplotlib
-```
-
-Optional tools:
-
-```
-faiss-cpu
-rank-bm25
-ragas
-langsmith
-```
+## Deployment placeholder
+- TODO: add instructions for Streamlit Community Cloud + container registry workflow.
+- TODO: include `helm/` or Terraform snippet if deploying behind an API.
 
 ---
 
-## Run the notebooks
-
-Start with the baseline notebook:
-
-```
-notebooks/01_baseline_rag.ipynb
-```
-
-Then progressively run:
-
-1. hybrid retrieval
-2. reranking
-3. evaluation framework
-4. monitoring experiments
+## Portfolio assets to drop in
+- TODO: App screenshot (e.g., `docs/images/app.png`) showing answer + citations + sidebar metrics.
+- TODO: Benchmark table or chart generated from `reports/` after running evaluation.
+- TODO: Short deployment blurb with live URL once hosted.
 
 ---
 
-# Example Query
-
-```
-How do we identify agents likely to churn?
-```
-
-Example retrieved evidence:
-
-```
-[doc_3_chunk_0]
-Important churn indicators include declining logins, policy count decay, reduced quoting activity...
-```
-
-Example grounded answer:
-
-```
-Agents at risk of churn can be identified by declining CRM logins, decreasing policy counts, and reduced quoting activity [doc_3_chunk_0].
-```
-
----
-
-# Future Improvements
-
-Planned improvements include:
-
-* cross‑encoder reranking
-* reciprocal rank fusion
-* query rewriting
-* parent‑child retrieval
-* hallucination detection
-* LLM‑as‑judge evaluation
-* vector database integration
-
----
-
-# Why This Project Exists
-
-Many RAG tutorials show how to embed documents and call an LLM.
-
-This project instead demonstrates how to:
-
-* measure retrieval quality
-* improve ranking
-* evaluate answers
-* monitor system behavior
-
-These skills are essential for **production AI systems**.
-
----
-
-# Author
-
-Liam Geron
-
-Senior Data Scientist working on ML systems, NLP, and applied AI.
-
-This repository is part of an ongoing exploration of **retrieval systems, LLM evaluation, and production AI architecture**.
+## Author
+Liam Geron — applied ML / retrieval systems. Built to showcase grounded RAG design, not just prompt engineering.
