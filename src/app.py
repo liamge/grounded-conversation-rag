@@ -12,16 +12,18 @@ from __future__ import annotations
 
 import os
 import statistics
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
 import pandas as pd
+import httpx
 import streamlit as st
 
 # Support running via `streamlit run src/app.py` (script) or as a package module.
 try:  # pragma: no cover - import guard for Streamlit execution style
     from .pipeline import PipelineResult, RAGPipeline
-    from .schemas import RetrievalResult
+    from .schemas import Chunk, GeneratedAnswer, QueryTrace, RetrievalResult
 except ImportError:  # pragma: no cover
     import sys
 
@@ -29,7 +31,7 @@ except ImportError:  # pragma: no cover
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.append(str(PROJECT_ROOT))
     from src.pipeline import PipelineResult, RAGPipeline  # type: ignore
-    from src.schemas import RetrievalResult  # type: ignore
+    from src.schemas import Chunk, GeneratedAnswer, QueryTrace, RetrievalResult  # type: ignore
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +105,9 @@ RETRIEVAL_LABELS: Dict[str, str] = (
     if _DISABLE_DENSE
     else _ALL_RETRIEVAL_LABELS
 )
+_API_URL = os.getenv("RAG_API_URL", "").strip()
+_USE_REMOTE_API = bool(_API_URL)
+_API_TIMEOUT = float(os.getenv("RAG_API_TIMEOUT", "30"))
 
 
 def _format_score(score: float) -> str:
@@ -119,6 +124,114 @@ def _history_frame() -> pd.DataFrame:
     if not history:
         return pd.DataFrame(columns=["query", "latency_ms", "retriever", "num_citations"])
     return pd.DataFrame(history)
+
+
+# ---------------------------------------------------------------------------
+# API helpers (used when RAG_API_URL is provided)
+# ---------------------------------------------------------------------------
+
+
+def _chunk_from_payload(raw: Dict[str, object]) -> Chunk:
+    metadata = raw.get("metadata", {}) or {}
+    return Chunk(
+        chunk_id=str(raw.get("chunk_id", "")),
+        text=str(raw.get("text", "")),
+        source=str(raw.get("source", "")),
+        title=str(raw.get("title", "")),
+        section=str(raw.get("section", "")),
+        doc_id=str(raw.get("doc_id", "")),
+        metadata={str(k): str(v) for k, v in metadata.items()},
+    )
+
+
+def _retrieval_from_payload(raw: Dict[str, object]) -> RetrievalResult:
+    return RetrievalResult(
+        chunk=_chunk_from_payload(raw.get("chunk", {})),
+        score=float(raw.get("score", 0.0)),
+        rank=int(raw.get("rank", 0)),
+        retriever=str(raw.get("retriever", "")),
+    )
+
+
+def _trace_from_payload(raw: Dict[str, object]) -> QueryTrace:
+    ts_raw = raw.get("timestamp")
+    timestamp = datetime.fromisoformat(ts_raw) if isinstance(ts_raw, str) and ts_raw else datetime.utcnow()
+    return QueryTrace(
+        query=str(raw.get("query", "")),
+        latency_ms=float(raw.get("latency_ms", 0.0)),
+        retriever=str(raw.get("retriever", "")),
+        top_scores=[float(v) for v in raw.get("top_scores", [])],
+        num_citations=int(raw.get("num_citations", 0)),
+        abstained=bool(raw.get("abstained", False)),
+        prompt_chars=int(raw.get("prompt_chars", 0)),
+        context_chars=int(raw.get("context_chars", 0)),
+        answer_chars=int(raw.get("answer_chars", 0)),
+        timestamp=timestamp,
+    )
+
+
+def _answer_from_payload(raw: Dict[str, object]) -> GeneratedAnswer:
+    return GeneratedAnswer(
+        answer=str(raw.get("answer", "")),
+        citations=[str(c) for c in raw.get("citations", [])],
+        prompt=str(raw.get("prompt", "")),
+        context=str(raw.get("context", "")),
+        provider=str(raw.get("provider", "unknown")),
+        model=str(raw.get("model", "unknown")),
+    )
+
+
+def _pipeline_result_from_api(payload: Dict[str, object]) -> PipelineResult:
+    retrieval_results = [_retrieval_from_payload(rec) for rec in payload.get("retrieval_results", [])]
+    reranked_results = [_retrieval_from_payload(rec) for rec in payload.get("retrieved_chunks", [])]
+    trace = _trace_from_payload(payload.get("trace", {}))
+    answer = _answer_from_payload(
+        {
+            "answer": payload.get("answer", ""),
+            "citations": payload.get("citations", []),
+            "prompt": payload.get("prompt", ""),
+            "context": payload.get("context", ""),
+            "provider": payload.get("provider", "unknown"),
+            "model": payload.get("model", "unknown"),
+        }
+    )
+
+    return PipelineResult(
+        query=trace.query or payload.get("query", ""),
+        retriever=str(payload.get("retriever", trace.retriever)),
+        reranker=payload.get("reranker"),
+        retrieval_results=retrieval_results,
+        reranked_results=reranked_results or retrieval_results,
+        answer=answer,
+        trace=trace,
+        prompt=answer.prompt,
+        context=answer.context,
+    )
+
+
+def _run_query_via_api(query: str, retriever_name: str, top_k: int, use_reranker: bool) -> PipelineResult:
+    if not _API_URL:
+        raise RuntimeError("RAG_API_URL is not configured.")
+
+    url = f"{_API_URL.rstrip('/')}/query"
+    payload = {
+        "query": query,
+        "retriever_name": retriever_name,
+        "top_k": top_k,
+        "use_reranker": use_reranker,
+    }
+    try:
+        response = httpx.post(url, json=payload, timeout=_API_TIMEOUT)
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:  # pragma: no cover - network path
+        detail = exc.response.json().get("detail") if exc.response is not None else str(exc)
+        raise RuntimeError(
+            f"API error ({exc.response.status_code if exc.response else 'unknown'}): {detail}"
+        ) from exc
+    except httpx.RequestError as exc:  # pragma: no cover - network path
+        raise RuntimeError(f"Failed to reach RAG API: {exc}") from exc
+
+    return _pipeline_result_from_api(response.json())
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +365,11 @@ def main() -> None:
     st.title("Grounded Conversation RAG")
     st.caption("Hybrid retrieval + grounded answering with portfolio-friendly UI.")
 
-    pipeline = get_pipeline()
+    if _USE_REMOTE_API:
+        st.info(f"Using remote RAG API at: `{_API_URL}`")
+        pipeline: Optional[RAGPipeline] = None
+    else:
+        pipeline = get_pipeline()
     result: Optional[PipelineResult] = None
 
     with st.form(key="query_form"):
@@ -279,12 +396,21 @@ def main() -> None:
         else:
             with st.spinner("Retrieving + generating..."):
                 try:
-                    result = pipeline.run(
-                        query=query,
-                        retriever_name=RETRIEVAL_LABELS[retriever_label],
-                        top_k=top_k,
-                        use_reranker=use_reranker,
-                    )
+                    if _USE_REMOTE_API:
+                        result = _run_query_via_api(
+                            query=query,
+                            retriever_name=RETRIEVAL_LABELS[retriever_label],
+                            top_k=top_k,
+                            use_reranker=use_reranker,
+                        )
+                    else:
+                        assert pipeline is not None
+                        result = pipeline.run(
+                            query=query,
+                            retriever_name=RETRIEVAL_LABELS[retriever_label],
+                            top_k=top_k,
+                            use_reranker=use_reranker,
+                        )
                     _append_trace(result)
                 except Exception as exc:  # pragma: no cover - UI surfacing
                     st.error(f"Pipeline error: {exc}")
