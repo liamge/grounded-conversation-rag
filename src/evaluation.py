@@ -25,6 +25,7 @@ from .generation import generate_answer
 from .ingestion import ingest_documents
 from .retrieval import BaseRetriever, build_retriever_from_config
 from .schemas import Chunk, Document, EvalExample, GeneratedAnswer, RetrievalResult
+from .diversity import apply_diversity_filter
 
 # ---------------------------------------------------------------------------
 # Core metric primitives
@@ -357,11 +358,22 @@ def run_benchmark(
 
     metrics: List[ExampleMetrics] = []
     for example in examples:
-        results = retriever.search(example.query, top_k=max(ks))
+        candidate_k = max(ks)
+        if settings.retrieval.enable_diversity_filter:
+            candidate_k = max(candidate_k, settings.retrieval.reranker_top_n)
+
+        results = retriever.search(example.query, top_k=candidate_k)
+        filtered_results = apply_diversity_filter(
+            results,
+            top_k=max(ks),
+            enable=settings.retrieval.enable_diversity_filter,
+            max_chunks_per_document=settings.retrieval.max_chunks_per_document,
+            duplicate_similarity_threshold=settings.retrieval.duplicate_similarity_threshold,
+        )
         answer: Optional[GeneratedAnswer] = None
         if generate_answers:
-            answer = generate_answer(example.query, results, settings)
-        metrics.append(score_example(example, results, answer, ks))
+            answer = generate_answer(example.query, filtered_results, settings)
+        metrics.append(score_example(example, filtered_results, answer, ks))
 
     summary = _aggregate(metrics)
 

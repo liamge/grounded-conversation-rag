@@ -9,6 +9,11 @@ Portfolio‑ready RAG system that ingests internal conversations + policies, run
 - `pip install -e .` for the minimal stack, or `pip install -e ".[dev,eval,dense]"` to include tests, OpenAI, FAISS, and evaluation extras.
 - Set `OPENAI_API_KEY` if you want live LLM answers; otherwise a deterministic fallback generator is used.
 - Optional: set `RAG_DISABLE_DENSE=1` to skip downloading sentence-transformers weights on first run.
+- Unified CLI (works in local dev or CI):
+  - `python -m src.cli index [--force] [--no-dense] [--config path]` – build indexes and cache artifacts.
+  - `python -m src.cli eval [--no-generation] [--no-dense] [--retriever NAME] [--eval-path FILE]` – run the benchmark and write reports to `reports/`.
+  - `python -m src.cli serve [--no-dense] [--host 0.0.0.0] [--port 8501] [--reload]` – launch the FastAPI backend.
+  - `python -m src.cli query "your question" [--no-dense] [--retriever NAME] [--top-k 5] [--pretty]` – run a single query and print structured JSON.
 
 Data paths, chunking parameters, models, and app settings live in `config/settings.yaml` and can be overridden via env vars (e.g., `RAG_APP__PORT=8080`).
 

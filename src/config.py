@@ -126,12 +126,29 @@ class RetrievalConfig(_BaseConfigModel):
     hybrid_weight_lexical: float = 0.5
     use_reranker: bool = False
     reranker_top_n: int = 10
+    max_chunks_per_document: int = 0
+    duplicate_similarity_threshold: float = 0.9
+    enable_diversity_filter: bool = True
 
     @field_validator("hybrid_weight_dense", "hybrid_weight_lexical")
     @classmethod
     def _weights_in_range(cls, v: float) -> float:
         if not 0.0 <= v <= 1.0:
             raise ValueError("hybrid weights must be between 0 and 1")
+        return v
+
+    @field_validator("duplicate_similarity_threshold")
+    @classmethod
+    def _similarity_in_range(cls, v: float) -> float:
+        if not 0.0 <= v <= 1.0:
+            raise ValueError("duplicate_similarity_threshold must be between 0 and 1")
+        return v
+
+    @field_validator("max_chunks_per_document")
+    @classmethod
+    def _non_negative(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("max_chunks_per_document cannot be negative")
         return v
 
 
@@ -239,6 +256,7 @@ class Settings(_BaseConfigModel):
 
         for path in [
             self.output.artifacts_dir,
+            self.output.artifacts_dir / "index",
             self.output.reports_dir,
             self.output.cache_dir,
             self.output.logs_dir,

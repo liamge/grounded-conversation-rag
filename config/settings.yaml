@@ -16,6 +16,9 @@ retrieval:
   hybrid_weight_lexical: 0.5
   use_reranker: true
   reranker_top_n: 10
+  max_chunks_per_document: 0
+  duplicate_similarity_threshold: 0.9
+  enable_diversity_filter: true
 
 models:
   embedding_model: sentence-transformers/all-MiniLM-L6-v2

@@ -19,6 +19,9 @@ own.
 from __future__ import annotations
 
 import time
+import os
+import logging
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
@@ -28,9 +31,14 @@ from .config import Settings
 from .evaluation import is_abstention
 from .generation import generate_answer
 from .ingestion import ingest_documents
-from .retrieval import BaseRetriever, RetrievalResult, build_retriever_from_config
+from .index_artifacts import IndexContext, compute_corpus_fingerprint
+from .diversity import apply_diversity_filter
+from .retrieval import BaseRetriever, RetrievalResult, build_retriever_from_config, HybridRetriever
 from .schemas import Chunk, Document, GeneratedAnswer, QueryTrace
 from .reranking import BaseReranker, KeywordOverlapReranker, build_reranker_from_config
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +98,8 @@ class RAGPipeline:
         self._retriever: BaseRetriever = retriever or build_retriever_from_config(self.settings)
         self._reranker: Optional[BaseReranker] = reranker
         self._retriever_ready = False
+        self._corpus_fingerprint: Optional[str] = None
+        self._index_context: Optional[IndexContext] = None
 
     # Public helpers ----------------------------------------------------
 
@@ -124,6 +134,14 @@ class RAGPipeline:
                 "No supported documents were found to ingest. Add source files under"
                 f" {raw_sources} or update settings.data.raw_dir."
             )
+        self._corpus_fingerprint = compute_corpus_fingerprint(self._documents)
+        self._index_context = IndexContext(
+            artifacts_root=self.settings.output.artifacts_dir,
+            corpus_fingerprint=self._corpus_fingerprint,
+            embedding_model=self.settings.models.embedding_model,
+            chunk_size=self.settings.retrieval.chunk_size,
+            chunk_overlap=self.settings.retrieval.chunk_overlap,
+        )
         self._chunks = chunk_documents(
             self._documents,
             chunk_size=self.settings.retrieval.chunk_size,
@@ -132,6 +150,7 @@ class RAGPipeline:
         if not self._chunks:
             raise ValueError("Chunking produced no results; check chunking parameters or input texts.")
         self._retriever_ready = False
+        self._apply_index_context()
 
     def index(self, *, retriever_name: Optional[str] = None, force: bool = False) -> None:
         """Build or rebuild the retriever index over current chunks."""
@@ -139,6 +158,7 @@ class RAGPipeline:
         if retriever_name and retriever_name != self._retriever.name:
             self._retriever = build_retriever_from_config(self.settings, retriever_name=retriever_name)
             self._retriever_ready = False
+            self._apply_index_context()
 
         if self._retriever_ready and not force:
             return
@@ -146,8 +166,44 @@ class RAGPipeline:
         if not self._chunks:
             self.load_corpus()
 
+        self._apply_index_context()
         self._retriever.index(self._chunks)
         self._retriever_ready = True
+
+    def build_all_indices(self, *, force: bool = False) -> None:
+        """Materialize indexes for all available retrievers without running a query."""
+
+        self.load_corpus()
+
+        names = ["tfidf", "bm25"]
+        disable_dense = os.getenv("RAG_DISABLE_DENSE", "").lower() in {"1", "true", "yes"}
+        if not disable_dense:
+            names.extend(["dense", "hybrid"])
+
+        for name in names:
+            retriever = build_retriever_from_config(self.settings, retriever_name=name)
+            self._apply_index_context_to(retriever)
+            if force:
+                try:
+                    target = self._index_context.retriever_dir(retriever.name) if self._index_context else None
+                    if target and target.exists():
+                        shutil.rmtree(target)
+                except Exception as exc:  # pragma: no cover - defensive
+                    _LOGGER.warning("Failed to clear artifacts for %s: %s", name, exc)
+
+            # Dense retriever can be forced via flag; lexical ones rebuild after artifact purge.
+            if force and hasattr(retriever, "force_recompute"):
+                try:
+                    setattr(retriever, "force_recompute", True)
+                except Exception:
+                    pass
+
+            try:
+                retriever.index(self._chunks)
+            except ImportError as exc:
+                _LOGGER.warning("Skipping retriever %s due to missing optional deps: %s", name, exc)
+            except Exception as exc:  # pragma: no cover - defensive
+                _LOGGER.warning("Failed to build index for %s: %s", name, exc)
 
     # Query execution ---------------------------------------------------
 
@@ -168,18 +224,28 @@ class RAGPipeline:
 
         k = top_k or self.settings.retrieval.top_k
         rerank_enabled = use_reranker if use_reranker is not None else self.settings.retrieval.use_reranker
+        diversity_enabled = self.settings.retrieval.enable_diversity_filter
 
         if rerank_enabled and self._reranker is None:
             self._reranker = build_reranker_from_config(self.settings)
 
-        # Fetch enough candidates to allow reranking when requested.
-        candidate_k = max(k, self.settings.retrieval.reranker_top_n) if rerank_enabled else k
+        # Fetch enough candidates to allow reranking and diversity filtering when requested.
+        candidate_k = max(k, self.settings.retrieval.reranker_top_n) if (rerank_enabled or diversity_enabled) else k
 
         start = time.perf_counter()
         retrieval_results = self._retriever.search(query, top_k=candidate_k)
 
-        reranked_results = self._apply_reranker(query, retrieval_results, top_n=k) if rerank_enabled else []
-        final_results = reranked_results or retrieval_results[:k]
+        reranked_candidates = (
+            self._apply_reranker(query, retrieval_results, top_n=candidate_k) if rerank_enabled else retrieval_results
+        )
+
+        final_results = apply_diversity_filter(
+            reranked_candidates,
+            top_k=k,
+            enable=diversity_enabled,
+            max_chunks_per_document=self.settings.retrieval.max_chunks_per_document,
+            duplicate_similarity_threshold=self.settings.retrieval.duplicate_similarity_threshold,
+        )
 
         answer = generate_answer(
             query,
@@ -195,13 +261,13 @@ class RAGPipeline:
             results=final_results,
             generation=answer,
             latency_ms=elapsed_ms,
-            rerank_used=bool(reranked_results),
+            rerank_used=bool(rerank_enabled),
         )
 
         return PipelineResult(
             query=query,
             retriever=self._retriever.name,
-            reranker=self._reranker.name if reranked_results else None,
+            reranker=self._reranker.name if rerank_enabled and self._reranker else None,
             retrieval_results=retrieval_results,
             reranked_results=final_results,
             answer=answer,
@@ -211,6 +277,22 @@ class RAGPipeline:
         )
 
     # Internal helpers --------------------------------------------------
+
+    def _apply_index_context(self) -> None:
+        if not self._index_context:
+            return
+        self._retriever.set_index_context(self._index_context)
+        if isinstance(self._retriever, HybridRetriever):
+            self._retriever.lexical.set_index_context(self._index_context)
+            self._retriever.dense.set_index_context(self._index_context)
+
+    def _apply_index_context_to(self, retriever: BaseRetriever) -> None:
+        if not self._index_context:
+            return
+        retriever.set_index_context(self._index_context)
+        if isinstance(retriever, HybridRetriever):
+            retriever.lexical.set_index_context(self._index_context)
+            retriever.dense.set_index_context(self._index_context)
 
     def _apply_reranker(
         self, query: str, results: Sequence[RetrievalResult], top_n: int

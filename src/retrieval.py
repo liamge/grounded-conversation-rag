@@ -18,14 +18,17 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import json
+import pickle
 from typing import Any, Callable, Dict, List, Optional, Sequence, TYPE_CHECKING
 
 import numpy as np
 from rank_bm25 import BM25Okapi
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import normalize as l2_normalize
+from scipy import sparse
 
 from .config import ModelConfig, RetrievalConfig, Settings
+from .index_artifacts import IndexContext, load_index_artifacts, save_index_artifacts
 from .schemas import Chunk, RetrievalResult
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -56,6 +59,7 @@ class BaseRetriever:
         self.top_k = top_k
         self.min_score = min_score
         self._indexed = False
+        self.index_context: Optional[IndexContext] = None
 
     def index(self, chunks: Sequence[Chunk]) -> None:  # pragma: no cover - interface
         raise NotImplementedError
@@ -79,6 +83,16 @@ class BaseRetriever:
     def _ensure_indexed(self) -> None:
         if not self._indexed:
             raise RuntimeError("Call index(chunks) before search().")
+
+    # Artifact helpers -------------------------------------------------
+
+    def set_index_context(self, context: Optional[IndexContext]) -> None:
+        self.index_context = context
+
+    def _artifact_dir(self) -> Optional[Path]:
+        if not self.index_context:
+            return None
+        return self.index_context.retriever_dir(self.name)
 
 
 # ---------------------------------------------------------------------------
@@ -104,11 +118,15 @@ class TfidfRetriever(BaseRetriever):
         self._chunks: List[Chunk] = []
 
     def index(self, chunks: Sequence[Chunk]) -> None:
+        if self._try_load_artifacts(chunks):
+            return
+
         self._chunks = list(chunks)
         texts = [c.text for c in self._chunks]
         self._vectorizer = TfidfVectorizer(stop_words="english", ngram_range=self.ngram_range)
         self._tfidf_matrix = self._vectorizer.fit_transform(texts)
         self._indexed = True
+        self._save_artifacts()
 
     def search(self, query: str, top_k: Optional[int] = None) -> List[RetrievalResult]:
         self._ensure_indexed()
@@ -133,6 +151,100 @@ class TfidfRetriever(BaseRetriever):
                 )
             )
         return results
+
+    # ----------------------- artifact helpers -----------------------
+
+    def _expected_manifest(self) -> Dict[str, Any]:
+        ctx = self.index_context
+        return {
+            "retriever": self.name,
+            "corpus_fingerprint": ctx.corpus_fingerprint if ctx else None,
+            "embedding_model": ctx.embedding_model if ctx else "",
+            "chunk_size": ctx.chunk_size if ctx else None,
+            "chunk_overlap": ctx.chunk_overlap if ctx else None,
+            "retriever_config": {
+                "ngram_range": list(self.ngram_range),
+                "top_k": self.top_k,
+                "min_score": self.min_score,
+            },
+        }
+
+    def _manifest_matches(self, manifest: Optional[Dict[str, Any]]) -> bool:
+        if not manifest:
+            return False
+        expected = self._expected_manifest()
+        keys = ["retriever", "corpus_fingerprint", "embedding_model", "chunk_size", "chunk_overlap"]
+        for key in keys:
+            if manifest.get(key) != expected.get(key):
+                return False
+        return manifest.get("retriever_config") == expected["retriever_config"]
+
+    def _paths(self) -> Optional[Dict[str, Path]]:
+        base = self._artifact_dir()
+        if not base:
+            return None
+        return {
+            "base": base,
+            "matrix": base / "tfidf_matrix.npz",
+            "vectorizer": base / "tfidf_vectorizer.pkl",
+            "chunks": base / "chunk_ids.json",
+        }
+
+    def _save_artifacts(self) -> None:
+        paths = self._paths()
+        if not paths or self._tfidf_matrix is None or self._vectorizer is None:
+            return
+
+        matrix = self._tfidf_matrix.tocsr()
+        paths["base"].mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(
+            paths["matrix"],
+            data=matrix.data,
+            indices=matrix.indices,
+            indptr=matrix.indptr,
+            shape=matrix.shape,
+        )
+        with paths["vectorizer"].open("wb") as f:
+            pickle.dump(self._vectorizer, f)
+        with paths["chunks"].open("w", encoding="utf-8") as f:
+            json.dump([c.chunk_id for c in self._chunks], f)
+
+        save_index_artifacts(paths["base"], self._expected_manifest())
+
+    def _try_load_artifacts(self, chunks: Sequence[Chunk]) -> bool:
+        paths = self._paths()
+        if not paths:
+            return False
+
+        manifest = load_index_artifacts(paths["base"])
+        if not self._manifest_matches(manifest):
+            return False
+
+        needed = ["matrix", "vectorizer", "chunks"]
+        if any(not paths[name].exists() for name in needed):
+            return False
+
+        try:
+            with paths["chunks"].open("r", encoding="utf-8") as f:
+                saved_chunk_ids = json.load(f)
+            if saved_chunk_ids != [c.chunk_id for c in chunks]:
+                return False
+
+            loader = np.load(paths["matrix"], allow_pickle=False)
+            matrix = sparse.csr_matrix(
+                (loader["data"], loader["indices"], loader["indptr"]), shape=loader["shape"]
+            )
+
+            with paths["vectorizer"].open("rb") as f:
+                vectorizer: TfidfVectorizer = pickle.load(f)
+
+            self._chunks = list(chunks)
+            self._tfidf_matrix = matrix
+            self._vectorizer = vectorizer
+            self._indexed = True
+            return True
+        except Exception:
+            return False
 
 
 class BM25Retriever(BaseRetriever):
@@ -163,10 +275,14 @@ class BM25Retriever(BaseRetriever):
         return [t for t in re.split(r"[^a-zA-Z0-9]+", text.lower()) if t]
 
     def index(self, chunks: Sequence[Chunk]) -> None:
+        if self._try_load_artifacts(chunks):
+            return
+
         self._chunks = list(chunks)
         self._tokenized_corpus = [self.tokenizer(c.text) for c in self._chunks]
         self._bm25 = BM25Okapi(self._tokenized_corpus, k1=self.k1, b=self.b)
         self._indexed = True
+        self._save_artifacts()
 
     def search(self, query: str, top_k: Optional[int] = None) -> List[RetrievalResult]:
         self._ensure_indexed()
@@ -190,6 +306,88 @@ class BM25Retriever(BaseRetriever):
                 )
             )
         return results
+
+    # ----------------------- artifact helpers -----------------------
+
+    def _expected_manifest(self) -> Dict[str, Any]:
+        ctx = self.index_context
+        return {
+            "retriever": self.name,
+            "corpus_fingerprint": ctx.corpus_fingerprint if ctx else None,
+            "embedding_model": ctx.embedding_model if ctx else "",
+            "chunk_size": ctx.chunk_size if ctx else None,
+            "chunk_overlap": ctx.chunk_overlap if ctx else None,
+            "retriever_config": {
+                "k1": self.k1,
+                "b": self.b,
+                "top_k": self.top_k,
+                "min_score": self.min_score,
+            },
+        }
+
+    def _manifest_matches(self, manifest: Optional[Dict[str, Any]]) -> bool:
+        if not manifest:
+            return False
+        expected = self._expected_manifest()
+        keys = ["retriever", "corpus_fingerprint", "embedding_model", "chunk_size", "chunk_overlap"]
+        for key in keys:
+            if manifest.get(key) != expected.get(key):
+                return False
+        return manifest.get("retriever_config") == expected["retriever_config"]
+
+    def _paths(self) -> Optional[Dict[str, Path]]:
+        base = self._artifact_dir()
+        if not base:
+            return None
+        return {
+            "base": base,
+            "tokens": base / "bm25_tokens.jsonl",
+            "chunks": base / "chunk_ids.json",
+        }
+
+    def _save_artifacts(self) -> None:
+        paths = self._paths()
+        if not paths or self._bm25 is None:
+            return
+        paths["base"].mkdir(parents=True, exist_ok=True)
+        with paths["tokens"].open("w", encoding="utf-8") as f:
+            for chunk, tokens in zip(self._chunks, self._tokenized_corpus):
+                f.write(json.dumps({"chunk_id": chunk.chunk_id, "tokens": tokens}) + "\n")
+        with paths["chunks"].open("w", encoding="utf-8") as f:
+            json.dump([c.chunk_id for c in self._chunks], f)
+        save_index_artifacts(paths["base"], self._expected_manifest())
+
+    def _try_load_artifacts(self, chunks: Sequence[Chunk]) -> bool:
+        paths = self._paths()
+        if not paths:
+            return False
+        manifest = load_index_artifacts(paths["base"])
+        if not self._manifest_matches(manifest):
+            return False
+        if any(not p.exists() for p in [paths["tokens"], paths["chunks"]]):
+            return False
+        try:
+            with paths["chunks"].open("r", encoding="utf-8") as f:
+                saved_chunk_ids = json.load(f)
+            if saved_chunk_ids != [c.chunk_id for c in chunks]:
+                return False
+            tokenized: List[List[str]] = []
+            with paths["tokens"].open("r", encoding="utf-8") as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    obj = json.loads(line)
+                    tokenized.append(list(obj.get("tokens", [])))
+            if len(tokenized) != len(chunks):
+                return False
+            bm25 = BM25Okapi(tokenized, k1=self.k1, b=self.b)
+            self._chunks = list(chunks)
+            self._tokenized_corpus = tokenized
+            self._bm25 = bm25
+            self._indexed = True
+            return True
+        except Exception:
+            return False
 
 
 # ---------------------------------------------------------------------------
