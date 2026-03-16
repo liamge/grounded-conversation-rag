@@ -170,7 +170,7 @@ class OutputConfig(_BaseConfigModel):
 class LoggingConfig(_BaseConfigModel):
     level: str = "INFO"
     log_file: Optional[Path] = Path("logs/app.log")
-    json_logs: bool = False
+    json_logs: bool = True
     propagate: bool = False
 
 

@@ -98,12 +98,16 @@ class GeneratedAnswer:
     context: str
     provider: str
     model: str
+    evidence_chunks: List[Chunk] = field(default_factory=list)
+    supported: bool = True
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, object]:
         return {
             "answer": self.answer,
             "citations": list(self.citations),
+            "evidence_chunks": [c.to_dict() for c in self.evidence_chunks],
+            "supported": self.supported,
             "prompt": self.prompt,
             "context": self.context,
             "provider": self.provider,
@@ -196,6 +200,29 @@ class QueryTrace:
         return json.dumps(self.to_row(), ensure_ascii=False)
 
 
+@dataclass(slots=True)
+class StageTimings:
+    """Per-stage latency measurements (milliseconds)."""
+
+    retrieval_ms: float = 0.0
+    rerank_ms: float = 0.0
+    diversity_ms: float = 0.0
+    generation_ms: float = 0.0
+    total_ms: float = 0.0
+
+    def to_row(self) -> Dict[str, float]:
+        return {
+            "retrieval_ms": round(self.retrieval_ms, 2),
+            "rerank_ms": round(self.rerank_ms, 2),
+            "diversity_ms": round(self.diversity_ms, 2),
+            "generation_ms": round(self.generation_ms, 2),
+            "total_ms": round(self.total_ms, 2),
+        }
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_row(), ensure_ascii=False)
+
+
 __all__ = [
     "Document",
     "Chunk",
@@ -203,4 +230,5 @@ __all__ = [
     "GeneratedAnswer",
     "EvalExample",
     "QueryTrace",
+    "StageTimings",
 ]

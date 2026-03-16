@@ -15,10 +15,11 @@ grounding requirements:
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .config import Settings
-from .schemas import GeneratedAnswer, RetrievalResult
+from .schemas import Chunk, GeneratedAnswer, RetrievalResult
 
 DEFAULT_CONTEXT_CHARS = 2_400
 
@@ -248,30 +249,51 @@ class OpenAIChatGenerator(BaseGenerator):
         )
 
         answer_text = response.choices[0].message.content.strip()
-        citations = _extract_citations(answer_text)
 
-        return GeneratedAnswer(
-            answer=answer_text,
-            citations=citations,
+        return _finalize_generated_answer(
+            raw_answer=answer_text,
+            retrieved=retrieved,
+            used_chunk_ids=used_chunk_ids,
             prompt=prompt,
-            context=context_block,
+            context_block=context_block,
+            truncation_metadata=truncation_metadata,
             provider=self.name,
             model=self.model,
-            metadata={"context_chunks": used_chunk_ids, "truncation": truncation_metadata},
         )
 
 
 class DeterministicFallbackGenerator(BaseGenerator):
     """Deterministic generator that works without external APIs.
 
-    Strategy: echo the highest-ranked chunk as the answer with a citation.
-    If no context is present, return the prescribed abstention string.
+    Strategy: synthesize a concise fallback answer from the top retrieved
+    chunks (up to three), preserving citations and clearly indicating the
+    response is a fallback. This keeps behavior deterministic while providing
+    a useful, non-empty answer even when LLM providers are unavailable.
     """
 
     name = "fallback"
 
     def __init__(self, model: str = "stub-grounded") -> None:
         self.model = model
+
+    @staticmethod
+    def _summarize_chunk(text: str, max_chars: int = 260) -> str:
+        """Derive a short, deterministic summary from a chunk body."""
+
+        normalized = " ".join(text.split())
+        if not normalized:
+            return "No content available."
+
+        # Take the first sentence-like span if available.
+        sentence_endings = [". ", "? ", "! "]
+        end_positions = [normalized.find(sep) + len(sep) for sep in sentence_endings if sep in normalized]
+        cutoff = min(end_positions) if end_positions else len(normalized)
+        snippet = normalized[:cutoff]
+
+        if len(snippet) > max_chars:
+            snippet = snippet[:max_chars].rstrip(" ,.;:") + "…"
+
+        return snippet
 
     def generate(
         self,
@@ -294,29 +316,46 @@ class DeterministicFallbackGenerator(BaseGenerator):
         )
 
         if not retrieved:
-            abstain = "I don't have enough evidence to answer confidently."
-            return GeneratedAnswer(
-                answer=abstain,
-                citations=[],
+            fallback_answer = (
+                "[Fallback] No context available; I don't have enough evidence to answer confidently."
+            )
+            return _finalize_generated_answer(
+                raw_answer=fallback_answer,
+                retrieved=retrieved,
+                used_chunk_ids=used_chunk_ids,
                 prompt=prompt,
-                context=context_block,
+                context_block=context_block,
+                truncation_metadata=truncation_metadata,
                 provider=self.name,
                 model=self.model,
-                metadata={"context_chunks": used_chunk_ids, "truncation": truncation_metadata},
             )
 
-        top_chunk = retrieved[0].chunk
-        snippet = top_chunk.text.strip()
-        answer = f"{snippet[:280].rstrip()} [{top_chunk.chunk_id}]"
+        # Synthesize from the top available context chunks (cap at three for brevity).
+        chunk_lookup = {res.chunk.chunk_id: res.chunk for res in retrieved}
+        target_ids = used_chunk_ids[:3] if used_chunk_ids else [retrieved[0].chunk.chunk_id]
 
-        return GeneratedAnswer(
-            answer=answer,
-            citations=[top_chunk.chunk_id],
+        summaries: List[str] = []
+        for cid in target_ids:
+            chunk = chunk_lookup.get(cid)
+            if not chunk:
+                continue
+            summary = self._summarize_chunk(chunk.text)
+            summaries.append(f"- {summary} [{cid}]")
+
+        if not summaries:
+            summaries = ["- No content available. [unknown]"]
+
+        answer = "\n".join(["[Fallback] Synthesized from retrieved context:", *summaries])
+
+        return _finalize_generated_answer(
+            raw_answer=answer,
+            retrieved=retrieved,
+            used_chunk_ids=used_chunk_ids,
             prompt=prompt,
-            context=context_block,
+            context_block=context_block,
+            truncation_metadata=truncation_metadata,
             provider=self.name,
             model=self.model,
-            metadata={"context_chunks": used_chunk_ids, "truncation": truncation_metadata},
         )
 
 
@@ -364,10 +403,86 @@ def generate_answer(
 def _extract_citations(text: str) -> List[str]:
     """Pull chunk_id-style citations (``[chunk_xxx]``) from model output."""
 
-    import re
-
     pattern = re.compile(r"\[(chunk_[a-zA-Z0-9]+)\]")
     return list(dict.fromkeys(pattern.findall(text)))  # preserve order, drop dupes
+
+
+def _validate_citations(
+    citations: Sequence[str],
+    allowed_chunk_ids: Sequence[str],
+    retrieved: Sequence[RetrievalResult],
+) -> Tuple[List[str], List[Chunk]]:
+    """Filter citations to those present in the assembled context.
+
+    Returns ordered, deduplicated citations plus the corresponding ``Chunk`` objects.
+    """
+
+    allowed = set(allowed_chunk_ids)
+    chunk_lookup = {res.chunk.chunk_id: res.chunk for res in retrieved}
+
+    valid: List[str] = []
+    evidence: List[Chunk] = []
+    for cid in citations:
+        if cid in allowed and cid in chunk_lookup and cid not in valid:
+            valid.append(cid)
+            evidence.append(chunk_lookup[cid])
+
+    return valid, evidence
+
+
+def _strip_invalid_citations(text: str, valid_citations: Sequence[str]) -> str:
+    """Remove references to invalid/missing citations from the answer text."""
+
+    if not text:
+        return ""
+
+    valid_set = set(valid_citations)
+    pattern = re.compile(r"\[(chunk_[a-zA-Z0-9]+)\]")
+
+    def _sub(match: re.Match[str]) -> str:
+        return match.group(0) if match.group(1) in valid_set else ""
+
+    cleaned = pattern.sub(_sub, text)
+    cleaned = re.sub(r" {2,}", " ", cleaned)
+    return cleaned.strip()
+
+
+def _finalize_generated_answer(
+    *,
+    raw_answer: str,
+    retrieved: Sequence[RetrievalResult],
+    used_chunk_ids: Sequence[str],
+    prompt: str,
+    context_block: str,
+    truncation_metadata: Dict[str, Any],
+    provider: str,
+    model: str,
+) -> GeneratedAnswer:
+    """Validate citations and produce a structured ``GeneratedAnswer``."""
+
+    raw_citations = _extract_citations(raw_answer)
+    valid_citations, evidence_chunks = _validate_citations(raw_citations, used_chunk_ids, retrieved)
+    cleaned_answer = _strip_invalid_citations(raw_answer, valid_citations)
+    supported = bool(valid_citations)
+
+    metadata = {
+        "context_chunks": list(used_chunk_ids),
+        "truncation": truncation_metadata,
+        "raw_citations": raw_citations,
+        "invalid_citations": [c for c in raw_citations if c not in valid_citations],
+    }
+
+    return GeneratedAnswer(
+        answer=cleaned_answer,
+        citations=valid_citations,
+        evidence_chunks=evidence_chunks,
+        supported=supported,
+        prompt=prompt,
+        context=context_block,
+        provider=provider,
+        model=model,
+        metadata=metadata,
+    )
 
 
 __all__ = [

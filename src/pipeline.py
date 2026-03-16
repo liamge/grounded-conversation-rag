@@ -22,7 +22,7 @@ import time
 import os
 import logging
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -34,8 +34,9 @@ from .ingestion import ingest_documents
 from .index_artifacts import IndexContext, compute_corpus_fingerprint
 from .diversity import apply_diversity_filter
 from .retrieval import BaseRetriever, RetrievalResult, build_retriever_from_config, HybridRetriever
-from .schemas import Chunk, Document, GeneratedAnswer, QueryTrace
+from .schemas import Chunk, Document, GeneratedAnswer, QueryTrace, StageTimings
 from .reranking import BaseReranker, KeywordOverlapReranker, build_reranker_from_config
+from .logging_utils import log_event
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -54,11 +55,13 @@ class PipelineResult:
     retriever: str
     reranker: Optional[str]
     retrieval_results: List[RetrievalResult]
-    reranked_results: List[RetrievalResult]
     answer: GeneratedAnswer
     trace: QueryTrace
     prompt: str
     context: str
+    reranked_results: List[RetrievalResult] = field(default_factory=list)
+    reranked_candidates: List[RetrievalResult] = field(default_factory=list)
+    timings: Optional[StageTimings] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -66,11 +69,19 @@ class PipelineResult:
             "retriever": self.retriever,
             "reranker": self.reranker,
             "retrieval_results": [r.to_dict() for r in self.retrieval_results],
+            "reranked_candidates": [r.to_dict() for r in self.reranked_candidates],
             "reranked_results": [r.to_dict() for r in self.reranked_results],
             "answer": self.answer.to_dict(),
+            "grounding": {
+                "answer": self.answer.answer,
+                "citations": list(self.answer.citations),
+                "evidence_chunks": [c.to_dict() for c in self.answer.evidence_chunks],
+                "supported": self.answer.supported,
+            },
             "trace": self.trace.to_row(),
             "prompt": self.prompt,
             "context": self.context,
+            "timings": self.timings.to_row() if self.timings else None,
         }
 
 
@@ -169,6 +180,13 @@ class RAGPipeline:
         self._apply_index_context()
         self._retriever.index(self._chunks)
         self._retriever_ready = True
+        log_event(
+            _LOGGER,
+            "index.build",
+            message=f"Indexed corpus for retriever {self._retriever.name}",
+            retriever=self._retriever.name,
+            chunk_count=len(self._chunks),
+        )
 
     def build_all_indices(self, *, force: bool = False) -> None:
         """Materialize indexes for all available retrievers without running a query."""
@@ -200,6 +218,13 @@ class RAGPipeline:
 
             try:
                 retriever.index(self._chunks)
+                log_event(
+                    _LOGGER,
+                    "index.build",
+                    message=f"Indexed corpus for retriever {retriever.name}",
+                    retriever=retriever.name,
+                    chunk_count=len(self._chunks),
+                )
             except ImportError as exc:
                 _LOGGER.warning("Skipping retriever %s due to missing optional deps: %s", name, exc)
             except Exception as exc:  # pragma: no cover - defensive
@@ -232,13 +257,40 @@ class RAGPipeline:
         # Fetch enough candidates to allow reranking and diversity filtering when requested.
         candidate_k = max(k, self.settings.retrieval.reranker_top_n) if (rerank_enabled or diversity_enabled) else k
 
-        start = time.perf_counter()
-        retrieval_results = self._retriever.search(query, top_k=candidate_k)
+        total_start = time.perf_counter()
 
-        reranked_candidates = (
-            self._apply_reranker(query, retrieval_results, top_n=candidate_k) if rerank_enabled else retrieval_results
+        retrieval_start = time.perf_counter()
+        retrieval_results = self._retriever.search(query, top_k=candidate_k)
+        retrieval_ms = (time.perf_counter() - retrieval_start) * 1000.0
+        log_event(
+            _LOGGER,
+            "retrieval.execute",
+            message="Retriever completed",
+            retriever=self._retriever.name,
+            query=query,
+            latency=round(retrieval_ms, 2),
+            chunk_count=len(retrieval_results),
         )
 
+        rerank_start = time.perf_counter()
+        reranked_candidates = (
+            self._apply_reranker(query, retrieval_results, top_n=candidate_k)
+            if rerank_enabled
+            else retrieval_results
+        )
+        rerank_ms = (time.perf_counter() - rerank_start) * 1000.0 if rerank_enabled else 0.0
+        if rerank_enabled:
+            log_event(
+                _LOGGER,
+                "rerank.execute",
+                message="Reranker completed",
+                retriever=self._retriever.name,
+                query=query,
+                latency=round(rerank_ms, 2),
+                chunk_count=len(reranked_candidates),
+            )
+
+        diversity_start = time.perf_counter()
         final_results = apply_diversity_filter(
             reranked_candidates,
             top_k=k,
@@ -246,7 +298,9 @@ class RAGPipeline:
             max_chunks_per_document=self.settings.retrieval.max_chunks_per_document,
             duplicate_similarity_threshold=self.settings.retrieval.duplicate_similarity_threshold,
         )
+        diversity_ms = (time.perf_counter() - diversity_start) * 1000.0
 
+        generation_start = time.perf_counter()
         answer = generate_answer(
             query,
             final_results,
@@ -254,8 +308,34 @@ class RAGPipeline:
             max_context_chars=max_context_chars or self.settings.retrieval.chunk_size * k,
             system_instruction=system_instruction,
         )
+        generation_ms = (time.perf_counter() - generation_start) * 1000.0
+        log_event(
+            _LOGGER,
+            "generation.complete",
+            message="Generation completed",
+            retriever=self._retriever.name,
+            query=query,
+            latency=round(generation_ms, 2),
+            chunk_count=len(final_results),
+        )
 
-        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        elapsed_ms = (time.perf_counter() - total_start) * 1000.0
+        timings = StageTimings(
+            retrieval_ms=retrieval_ms,
+            rerank_ms=rerank_ms,
+            diversity_ms=diversity_ms,
+            generation_ms=generation_ms,
+            total_ms=elapsed_ms,
+        )
+        log_event(
+            _LOGGER,
+            "pipeline.complete",
+            message="Pipeline finished",
+            retriever=self._retriever.name,
+            query=query,
+            latency=round(elapsed_ms, 2),
+            chunk_count=len(final_results),
+        )
         trace = self._build_trace(
             query=query,
             results=final_results,
@@ -270,10 +350,12 @@ class RAGPipeline:
             reranker=self._reranker.name if rerank_enabled and self._reranker else None,
             retrieval_results=retrieval_results,
             reranked_results=final_results,
+            reranked_candidates=reranked_candidates,
             answer=answer,
             trace=trace,
             prompt=answer.prompt,
             context=answer.context,
+            timings=timings,
         )
 
     # Internal helpers --------------------------------------------------

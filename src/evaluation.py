@@ -339,6 +339,7 @@ def run_benchmark(
     retriever: Optional[BaseRetriever] = None,
     generate_answers: bool = True,
     ks: Sequence[int] | None = None,
+    report_prefix: str = "eval",
 ) -> Tuple[List[ExampleMetrics], Dict[str, float]]:
     """Execute the full evaluation pipeline.
 
@@ -379,8 +380,11 @@ def run_benchmark(
 
     reports_dir = Path(settings.output.reports_dir)
     reports_dir.mkdir(parents=True, exist_ok=True)
-    _write_csv([m.to_flat_dict() for m in metrics], reports_dir / "eval_results.csv")
-    _write_json(summary, reports_dir / "eval_summary.json")
+    prefix = report_prefix.strip() or "eval"
+    results_name = f"{prefix}_results.csv"
+    summary_name = f"{prefix}_summary.json"
+    _write_csv([m.to_flat_dict() for m in metrics], reports_dir / results_name)
+    _write_json(summary, reports_dir / summary_name)
 
     return metrics, summary
 

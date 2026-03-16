@@ -34,6 +34,8 @@ class RetrievalResultModel(BaseModel):
 class AnswerModel(BaseModel):
     answer: str
     citations: List[str] = Field(default_factory=list)
+    evidence_chunks: List[ChunkModel] = Field(default_factory=list)
+    supported: bool = True
     prompt: str
     context: str
     provider: str
@@ -51,6 +53,14 @@ class TraceModel(BaseModel):
     context_chars: int
     answer_chars: int
     timestamp: datetime
+
+
+class StageTimingsModel(BaseModel):
+    retrieval_ms: float = 0.0
+    rerank_ms: float = 0.0
+    diversity_ms: float = 0.0
+    generation_ms: float = 0.0
+    total_ms: float = 0.0
 
 
 class QueryRequest(BaseModel):
@@ -73,7 +83,10 @@ class QueryRequest(BaseModel):
 class QueryResponse(BaseModel):
     answer: str
     citations: List[str]
+    evidence_chunks: List[ChunkModel]
+    supported: bool
     retrieval_results: List[RetrievalResultModel]
+    reranked_candidates: List[RetrievalResultModel] = Field(default_factory=list)
     retrieved_chunks: List[RetrievalResultModel]
     retriever: str
     reranker: Optional[str]
@@ -83,6 +96,7 @@ class QueryResponse(BaseModel):
     context: str
     model: str
     provider: str
+    timings: Optional[StageTimingsModel] = None
 
 
 class IndexRebuildRequest(BaseModel):

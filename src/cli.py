@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from .config import Settings
+from .logging_utils import configure_logging, request_logging_context
 
 
 # ---------------------------------------------------------------------------
@@ -33,7 +34,9 @@ def _print_error(message: str) -> None:
 
 def _load_settings(config_path: str | None) -> Settings:
     try:
-        return Settings.load(path=config_path) if config_path else Settings.load()
+        settings = Settings.load(path=config_path) if config_path else Settings.load()
+        configure_logging(settings.logging)
+        return settings
     except FileNotFoundError as exc:
         _print_error(str(exc))
         sys.exit(1)
@@ -113,6 +116,7 @@ def cmd_eval(args: argparse.Namespace) -> None:
             retriever=retriever,
             generate_answers=not args.no_generation,
             ks=ks,
+            report_prefix=args.report_prefix,
         )
     except Exception as exc:  # pragma: no cover - runtime guard
         _print_error(f"Evaluation failed: {exc}")
@@ -164,14 +168,15 @@ def cmd_query(args: argparse.Namespace) -> None:
 
     pipeline = RAGPipeline(settings=settings)
     try:
-        result = pipeline.run(
-            args.query,
-            retriever_name=args.retriever,
-            top_k=args.top_k,
-            max_context_chars=args.max_context_chars,
-            system_instruction=args.system_instruction,
-            use_reranker=args.use_reranker,
-        )
+        with request_logging_context(query=args.query, retriever=args.retriever or pipeline.retriever.name):
+            result = pipeline.run(
+                args.query,
+                retriever_name=args.retriever,
+                top_k=args.top_k,
+                max_context_chars=args.max_context_chars,
+                system_instruction=args.system_instruction,
+                use_reranker=args.use_reranker,
+            )
     except Exception as exc:  # pragma: no cover - runtime guard
         _print_error(f"Query failed: {exc}")
         sys.exit(1)
@@ -219,6 +224,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_eval.add_argument("--config", type=str, default=None, help="Path to settings YAML")
     p_eval.add_argument("--eval-path", type=str, default=None, help="Override eval JSONL path")
     p_eval.add_argument("--retriever", type=str, default=None, help="Force a specific retriever")
+    p_eval.add_argument(
+        "--report-prefix",
+        type=str,
+        default="eval",
+        help="Prefix for eval artifacts (writes <prefix>_results.csv and <prefix>_summary.json)",
+    )
     p_eval.add_argument("--k", type=int, nargs="+", help="Override list of k values (e.g., --k 3 5)")
     p_eval.add_argument(
         "--no-generation",
