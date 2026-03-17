@@ -9,12 +9,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 from typing import List
 
+from src.chunking import chunk_document
 from src.config import Settings
 from src.ingestion import ingest_documents
-from src.chunking import chunk_document
 from src.retrieval import DenseRetriever
 
 

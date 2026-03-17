@@ -8,7 +8,7 @@ comparisons, not rigorous evaluation.
 from __future__ import annotations
 
 import argparse
-from typing import Dict, Iterable, List, Sequence
+from typing import Dict, List, Sequence
 
 import numpy as np
 
@@ -20,7 +20,6 @@ from src.retrieval import (
     DenseRetriever,
     HybridRetriever,
     TfidfRetriever,
-    build_retriever_from_config,
 )
 
 # ---------------------------------------------------------------------------
@@ -41,7 +40,10 @@ def _toy_corpus() -> List[Document]:
             "source": "toy",
         },
         {
-            "text": "Parrots are intelligent birds that can mimic human speech and need enrichment.",
+            "text": (
+                "Parrots are intelligent birds that can mimic human speech "
+                "and need enrichment."
+            ),
             "title": "About Parrots",
             "source": "toy",
         },
@@ -64,7 +66,10 @@ def _toy_corpus() -> List[Document]:
 def _toy_queries() -> List[Dict[str, object]]:
     return [
         {"query": "What pet chases lasers?", "relevant_doc_ids": {"doc_about_cats"}},
-        {"query": "Which animal enjoys walks and fetching balls?", "relevant_doc_ids": {"doc_about_dogs"}},
+        {
+            "query": "Which animal enjoys walks and fetching balls?",
+            "relevant_doc_ids": {"doc_about_dogs"},
+        },
         {"query": "Bird that mimics human speech?", "relevant_doc_ids": {"doc_about_parrots"}},
     ]
 
@@ -97,18 +102,31 @@ def run_benchmark(include_dense: bool = True) -> None:
     docs = _toy_corpus()
     chunks: List[Chunk] = []
     for doc in docs:
-        chunks.extend(chunk_document(doc, chunk_size=settings.retrieval.chunk_size, chunk_overlap=settings.retrieval.chunk_overlap))
+        chunks.extend(
+            chunk_document(
+                doc,
+                chunk_size=settings.retrieval.chunk_size,
+                chunk_overlap=settings.retrieval.chunk_overlap,
+            )
+        )
 
     queries = _toy_queries()
 
     retrievers = {
         "tfidf": TfidfRetriever(top_k=settings.retrieval.top_k),
-        "bm25": BM25Retriever(top_k=settings.retrieval.top_k, k1=settings.retrieval.bm25_k1, b=settings.retrieval.bm25_b),
+        "bm25": BM25Retriever(
+            top_k=settings.retrieval.top_k,
+            k1=settings.retrieval.bm25_k1,
+            b=settings.retrieval.bm25_b,
+        ),
     }
 
     if include_dense:
         try:
-            retrievers["dense"] = DenseRetriever(model_name=settings.models.embedding_model, top_k=settings.retrieval.top_k)
+            retrievers["dense"] = DenseRetriever(
+                model_name=settings.models.embedding_model,
+                top_k=settings.retrieval.top_k,
+            )
             retrievers["hybrid"] = HybridRetriever(
                 lexical=retrievers["bm25"],
                 dense=retrievers["dense"],

@@ -15,17 +15,17 @@ can assemble citations or debug retrieval quality.
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
 import json
+import os
 import pickle
-from typing import Any, Callable, Dict, List, Optional, Sequence, TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Sequence
 
 import numpy as np
 from rank_bm25 import BM25Okapi
+from scipy import sparse
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import normalize as l2_normalize
-from scipy import sparse
 
 from .config import ModelConfig, RetrievalConfig, Settings
 from .index_artifacts import IndexContext, load_index_artifacts, save_index_artifacts
@@ -76,7 +76,8 @@ class BaseRetriever:
         k = min(max(k, 0), scores.shape[0])
         if k == 0:
             return np.array([], dtype=int)
-        # Stable descending sort; ties keep original corpus order (important for deterministic tests).
+        # Stable descending sort; ties keep original corpus order (important for
+        # deterministic tests).
         order = np.argsort(-scores, kind="stable")
         return order[:k]
 
@@ -691,7 +692,12 @@ def build_retriever_from_config(
     if disable_dense and name in {"dense", "hybrid"}:
         name = "bm25"
 
-    lexical = BM25Retriever(top_k=r_cfg.top_k, min_score=r_cfg.min_score, k1=r_cfg.bm25_k1, b=r_cfg.bm25_b)
+    lexical = BM25Retriever(
+        top_k=r_cfg.top_k,
+        min_score=r_cfg.min_score,
+        k1=r_cfg.bm25_k1,
+        b=r_cfg.bm25_b,
+    )
 
     if name == "tfidf":
         return TfidfRetriever(top_k=r_cfg.top_k, min_score=r_cfg.min_score)

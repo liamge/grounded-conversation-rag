@@ -128,7 +128,9 @@ class CrossEncoderReranker:
     def _get_model(self) -> "CrossEncoder":
         if self._model is None:
             assert CrossEncoder is not None  # for type checkers
-            self._model = CrossEncoder(self.model_name, device=self.device, max_length=self.max_length)
+            self._model = CrossEncoder(
+                self.model_name, device=self.device, max_length=self.max_length
+            )
         return self._model
 
     def rerank(
@@ -175,7 +177,11 @@ def build_reranker_from_config(settings: Settings) -> BaseReranker:
         try:
             return CrossEncoderReranker(model_name=model_name)
         except Exception as exc:  # pragma: no cover - runtime guard
-            logger.warning("Failed to initialize cross-encoder reranker (%s); falling back. %s", model_name, exc)
+            logger.warning(
+                "Failed to initialize cross-encoder reranker (%s); falling back. %s",
+                model_name,
+                exc,
+            )
 
     logger.info("Using keyword overlap reranker (cross-encoder unavailable).")
     return KeywordOverlapReranker()

@@ -1,10 +1,10 @@
 from src.config import Settings
 from src.generation import (
     LightweightExtractiveGenerator,
+    _split_sentences,
     assemble_context_with_budget,
     build_generator,
     generate_answer,
-    _split_sentences,
 )
 from src.schemas import Chunk, RetrievalResult
 
@@ -99,9 +99,12 @@ def test_lightweight_generator_prefers_relevant_sentences(monkeypatch) -> None:
 
 def test_lightweight_generator_deduplicates_similar_sentences(monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    settings = Settings()
     retrieved = [
-        _res("chunk_a", "Hybrid retrieval combines lexical and dense scores. Hybrid retrieval combines lexical and dense scores."),
+        _res(
+            "chunk_a",
+            "Hybrid retrieval combines lexical and dense scores. "
+            "Hybrid retrieval combines lexical and dense scores.",
+        ),
         _res("chunk_b", "Lexical and dense scores are merged in the hybrid approach."),
     ]
 

@@ -17,11 +17,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
-
 # Context variables allow propagation across async tasks and threadpools.
-_request_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("request_id", default=None)
+_request_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "request_id", default=None
+)
 _query: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("query", default=None)
-_retriever: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("retriever", default=None)
+_retriever: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "retriever", default=None
+)
 
 
 @dataclass
@@ -106,14 +109,26 @@ def configure_logging(config: Optional[Any] = None, *, force: bool = True) -> No
     root.addFilter(ContextFilter())
 
 
-def log_event(logger: logging.Logger, event: str, message: Optional[str] = None, *, level: int = logging.INFO, **fields: Any) -> None:
+def log_event(
+    logger: logging.Logger,
+    event: str,
+    message: Optional[str] = None,
+    *,
+    level: int = logging.INFO,
+    **fields: Any,
+) -> None:
     """Helper to emit structured log entries with a normalized ``event`` field."""
 
     logger.log(level, message or event, extra={"event": event, **fields})
 
 
 @contextmanager
-def request_logging_context(*, request_id: Optional[str] = None, query: Optional[str] = None, retriever: Optional[str] = None):
+def request_logging_context(
+    *,
+    request_id: Optional[str] = None,
+    query: Optional[str] = None,
+    retriever: Optional[str] = None,
+):
     """Context manager to push request-level fields onto contextvars."""
 
     tokens = []

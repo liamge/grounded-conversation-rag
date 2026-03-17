@@ -1,4 +1,3 @@
-import pytest
 
 from src.chunking import Chunk, chunk_document, chunk_documents
 from src.ingestion import Document

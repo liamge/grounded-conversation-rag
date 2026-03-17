@@ -15,10 +15,10 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from ..config import Settings
+from ..logging_utils import configure_logging, log_event, request_logging_context
 from ..monitoring import aggregate_records
 from ..pipeline import PipelineResult, RAGPipeline
 from ..schemas import Chunk, GeneratedAnswer, QueryTrace, RetrievalResult, StageTimings
-from ..logging_utils import configure_logging, request_logging_context, log_event
 from .models import (
     AnswerModel,
     ChunkModel,
@@ -30,8 +30,8 @@ from .models import (
     QueryRequest,
     QueryResponse,
     RetrievalResultModel,
-    TraceModel,
     StageTimingsModel,
+    TraceModel,
 )
 
 settings = Settings.load()
@@ -120,7 +120,9 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
 
 
 @app.exception_handler(Exception)
-async def generic_exception_handler(request: Request, exc: Exception):  # pragma: no cover - safety net
+async def generic_exception_handler(
+    request: Request, exc: Exception
+):  # pragma: no cover - safety net
     logger.exception("Unhandled exception during request")
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -131,7 +133,10 @@ async def generic_exception_handler(request: Request, exc: Exception):  # pragma
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     if _pipeline is None:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Pipeline not ready")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Pipeline not ready",
+        )
     return HealthResponse(
         status="ok",
         retriever_ready=_pipeline._retriever_ready,
@@ -150,7 +155,10 @@ async def health() -> HealthResponse:
 )
 async def query_rag(payload: QueryRequest, request: Request) -> QueryResponse:
     if _pipeline is None:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Pipeline not ready")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Pipeline not ready",
+        )
 
     retriever_name = payload.retriever_name or _pipeline.retriever.name
     try:
@@ -172,7 +180,10 @@ async def query_rag(payload: QueryRequest, request: Request) -> QueryResponse:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:  # pragma: no cover - runtime surface
         logger.exception("Pipeline execution failed")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(exc),
+        ) from exc
 
     _record_trace(result.trace)
     return _result_to_response(result)
@@ -185,14 +196,20 @@ async def query_rag(payload: QueryRequest, request: Request) -> QueryResponse:
 )
 async def rebuild_index(payload: IndexRebuildRequest) -> IndexRebuildResponse:
     if _pipeline is None:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Pipeline not ready")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Pipeline not ready",
+        )
 
     try:
         await run_in_threadpool(_pipeline.load_corpus, force=payload.force)
         await run_in_threadpool(_pipeline.index, payload.retriever_name, payload.force)
     except Exception as exc:  # pragma: no cover - runtime surface
         logger.exception("Index rebuild failed")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(exc),
+        ) from exc
 
     return IndexRebuildResponse(
         retriever=_pipeline.retriever.name,

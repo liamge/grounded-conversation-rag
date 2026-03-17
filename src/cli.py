@@ -22,7 +22,6 @@ from typing import Any, Dict, List
 from .config import Settings
 from .logging_utils import configure_logging, request_logging_context
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -168,7 +167,10 @@ def cmd_query(args: argparse.Namespace) -> None:
 
     pipeline = RAGPipeline(settings=settings)
     try:
-        with request_logging_context(query=args.query, retriever=args.retriever or pipeline.retriever.name):
+        with request_logging_context(
+            query=args.query,
+            retriever=args.retriever or pipeline.retriever.name,
+        ):
             result = pipeline.run(
                 args.query,
                 retriever_name=args.retriever,
@@ -230,7 +232,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="eval",
         help="Prefix for eval artifacts (writes <prefix>_results.csv and <prefix>_summary.json)",
     )
-    p_eval.add_argument("--k", type=int, nargs="+", help="Override list of k values (e.g., --k 3 5)")
+    p_eval.add_argument(
+        "--k",
+        type=int,
+        nargs="+",
+        help="Override list of k values (e.g., --k 3 5)",
+    )
     p_eval.add_argument(
         "--no-generation",
         action="store_true",
@@ -246,7 +253,9 @@ def build_parser() -> argparse.ArgumentParser:
     # serve -----------------------------------------------------------
     p_serve = subparsers.add_parser("serve", help="Launch the FastAPI backend")
     p_serve.add_argument("--config", type=str, default=None, help="Path to settings YAML")
-    p_serve.add_argument("--host", type=str, default=None, help="Bind address (default from settings)")
+    p_serve.add_argument(
+        "--host", type=str, default=None, help="Bind address (default from settings)"
+    )
     p_serve.add_argument("--port", type=int, default=None, help="Port (default from settings)")
     p_serve.add_argument("--reload", action="store_true", help="Enable autoreload for local dev")
     p_serve.add_argument(
@@ -275,8 +284,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional system prompt override for generation",
     )
     reranker_group = p_query.add_mutually_exclusive_group()
-    reranker_group.add_argument("--reranker", dest="use_reranker", action="store_true", help="Force reranker on")
-    reranker_group.add_argument("--no-reranker", dest="use_reranker", action="store_false", help="Disable reranker")
+    reranker_group.add_argument(
+        "--reranker",
+        dest="use_reranker",
+        action="store_true",
+        help="Force reranker on",
+    )
+    reranker_group.add_argument(
+        "--no-reranker",
+        dest="use_reranker",
+        action="store_false",
+        help="Disable reranker",
+    )
     p_query.add_argument("--pretty", action="store_true", help="Pretty-print JSON output")
     p_query.add_argument(
         "--no-dense",

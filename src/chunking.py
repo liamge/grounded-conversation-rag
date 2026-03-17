@@ -8,11 +8,10 @@ generates deterministic chunk identifiers.
 from __future__ import annotations
 
 import uuid
-from typing import Dict, List, Sequence, Tuple
+from typing import List, Sequence, Tuple
 
 from .ingestion import normalize_text
 from .schemas import Chunk, Document
-
 
 _CHUNK_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "grounded-conversation-rag/chunk")
 
@@ -59,7 +58,9 @@ def _split_sentences(text: str) -> List[Tuple[int, str]]:
     return spans
 
 
-def _split_long_sentence(sentence: str, offset: int, chunk_size: int, chunk_overlap: int) -> List[Tuple[int, str]]:
+def _split_long_sentence(
+    sentence: str, offset: int, chunk_size: int, chunk_overlap: int
+) -> List[Tuple[int, str]]:
     """Fallback splitter for sentences longer than the allowed chunk size."""
 
     units: List[Tuple[int, str]] = []
@@ -80,7 +81,9 @@ def _joined_length(units: List[Tuple[int, str]]) -> int:
     return total + (len(units) - 1)
 
 
-def _carry_overlap_text(units: List[Tuple[int, str]], chunk_start_offset: int, overlap: int) -> List[Tuple[int, str]]:
+def _carry_overlap_text(
+    units: List[Tuple[int, str]], chunk_start_offset: int, overlap: int
+) -> List[Tuple[int, str]]:
     if overlap <= 0 or not units:
         return []
 
@@ -138,12 +141,16 @@ def chunk_document(doc: Document, chunk_size: int = 512, chunk_overlap: int = 64
                     title=doc.title,
                     section=doc.section or "",
                     doc_id=doc.doc_id,
-                metadata=chunk_metadata,
+                    metadata=chunk_metadata,
                 )
             )
 
-            # Only carry overlap when the chunk combined multiple units (i.e., at sentence boundaries).
-            current = _carry_overlap_text(current, chunk_start_offset, chunk_overlap) if len(current) > 1 else []
+            # Carry overlap only when the chunk combined multiple units (sentence boundary).
+            current = (
+                _carry_overlap_text(current, chunk_start_offset, chunk_overlap)
+                if len(current) > 1
+                else []
+            )
             current_length = _joined_length(current)
             chunk_start_offset = current[0][0] if current else offset
             additional = len(unit_text) if not current else len(unit_text) + 1
@@ -175,10 +182,18 @@ def chunk_document(doc: Document, chunk_size: int = 512, chunk_overlap: int = 64
     return chunks
 
 
-def chunk_documents(documents: Sequence[Document], chunk_size: int = 512, chunk_overlap: int = 64) -> List[Chunk]:
+def chunk_documents(
+    documents: Sequence[Document], chunk_size: int = 512, chunk_overlap: int = 64
+) -> List[Chunk]:
     all_chunks: List[Chunk] = []
     for doc in documents:
-        all_chunks.extend(chunk_document(doc, chunk_size=chunk_size, chunk_overlap=chunk_overlap))
+        all_chunks.extend(
+            chunk_document(
+                doc,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+            )
+        )
     return all_chunks
 
 

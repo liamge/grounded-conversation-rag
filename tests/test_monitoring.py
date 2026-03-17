@@ -1,11 +1,10 @@
 import json
 from pathlib import Path
 
-import numpy as np
 import pytest
 
-from src.config import Settings
 from src.chunking import Chunk
+from src.config import Settings
 from src.generation import GeneratedAnswer
 from src.monitoring import (
     QueryTrace,

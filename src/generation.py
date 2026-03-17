@@ -129,7 +129,9 @@ def assemble_context_with_budget(
     return context_text, used_chunk_ids, truncation_metadata
 
 
-def assemble_context(results: Sequence[RetrievalResult], max_chars: int = DEFAULT_CONTEXT_CHARS) -> str:
+def assemble_context(
+    results: Sequence[RetrievalResult], max_chars: int = DEFAULT_CONTEXT_CHARS
+) -> str:
     """Backward-compatible wrapper returning only the context text."""
 
     context_text, _, _ = assemble_context_with_budget(results, max_tokens=max_chars)
@@ -249,7 +251,10 @@ class OpenAIChatGenerator(BaseGenerator):
         )
 
         messages = [
-            {"role": "system", "content": prompt.split("CONTEXT:")[0].replace("SYSTEM:\n", "").strip()},
+            {
+                "role": "system",
+                "content": prompt.split("CONTEXT:")[0].replace("SYSTEM:\n", "").strip(),
+            },
             {"role": "user", "content": prompt[prompt.index("CONTEXT:"):]},
         ]
 
@@ -358,7 +363,15 @@ class LightweightExtractiveGenerator(BaseGenerator):
                 normalized = _normalize_sentence(sentence)
                 if not normalized:
                     continue
-                score = self._score_sentence(normalized, query_terms, retrieval_norm, res.rank, position)
+                tokens = set(_tokenize(normalized.lower()))
+                overlap = len(tokens & query_terms)
+                if overlap == 0:
+                    continue
+                score = self._score_sentence(
+                    normalized, query_terms, retrieval_norm, res.rank, position
+                )
+                if score <= 0:
+                    continue
                 # small deterministic tie-breaker favors earlier sentences
                 score -= position * 0.001
                 candidates.append(_CandidateSentence(res.chunk.chunk_id, normalized, score))
@@ -366,12 +379,17 @@ class LightweightExtractiveGenerator(BaseGenerator):
         candidates.sort(key=lambda c: c.score, reverse=True)
         return candidates
 
-    def _select_sentences(self, candidates: Sequence[_CandidateSentence]) -> List[_CandidateSentence]:
+    def _select_sentences(
+        self, candidates: Sequence[_CandidateSentence]
+    ) -> List[_CandidateSentence]:
         selected: List[_CandidateSentence] = []
         for cand in candidates:
             if len(selected) >= self.max_sentences:
                 break
-            if any(_jaccard_similarity(cand.text, kept.text) >= self._redundancy_threshold for kept in selected):
+            if any(
+                _jaccard_similarity(cand.text, kept.text) >= self._redundancy_threshold
+                for kept in selected
+            ):
                 continue
             selected.append(cand)
         return selected
@@ -450,7 +468,10 @@ class LocalTransformersGenerator(BaseGenerator):
             from transformers import pipeline  # type: ignore
         except Exception as exc:  # pragma: no cover - optional dependency
             raise ImportError(
-                "transformers is required for LocalTransformersGenerator. Install the 'local_llm' extra."
+                (
+                    "transformers is required for LocalTransformersGenerator. "
+                    "Install the 'local_llm' extra."
+                )
             ) from exc
 
         self._pipeline = pipeline(
@@ -522,7 +543,9 @@ class DeterministicFallbackGenerator(BaseGenerator):
 
         # Take the first sentence-like span if available.
         sentence_endings = [". ", "? ", "! "]
-        end_positions = [normalized.find(sep) + len(sep) for sep in sentence_endings if sep in normalized]
+        end_positions = [
+            normalized.find(sep) + len(sep) for sep in sentence_endings if sep in normalized
+        ]
         cutoff = min(end_positions) if end_positions else len(normalized)
         snippet = normalized[:cutoff]
 
@@ -553,7 +576,8 @@ class DeterministicFallbackGenerator(BaseGenerator):
 
         if not retrieved:
             fallback_answer = (
-                "Grounded fallback: no source snippets are available yet, so I cannot answer confidently."
+                "Grounded fallback: no source snippets are available yet, "
+                "so I cannot answer confidently."
             )
             return _finalize_generated_answer(
                 raw_answer=fallback_answer,

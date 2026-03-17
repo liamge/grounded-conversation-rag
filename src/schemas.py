@@ -10,8 +10,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
-
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 # ---------------------------------------------------------------------------
 # Corpus objects

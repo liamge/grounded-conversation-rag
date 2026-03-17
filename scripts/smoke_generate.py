@@ -1,9 +1,10 @@
 # scripts/smoke_generate.py
-from src.config import Settings
-from src.ingestion import Document
 from src.chunking import chunk_document
+from src.config import Settings
+from src.generation import assemble_context, generate_answer
+from src.ingestion import Document
 from src.retrieval import BM25Retriever, TfidfRetriever
-from src.generation import generate_answer, assemble_context
+
 
 def main():
     settings = Settings()

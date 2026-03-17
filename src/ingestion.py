@@ -16,7 +16,6 @@ from typing import Dict, Iterable, List, Optional, Sequence, Union
 
 from .schemas import Document
 
-
 # Supported extensions for ingestion.
 SUPPORTED_EXTENSIONS = {".txt", ".md", ".json", ".jsonl"}
 
@@ -90,12 +89,23 @@ def _load_json(path: Path) -> List[Document]:
         section = doc_obj.get("section")
         source = str(doc_obj.get("source") or path)
 
-        metadata = {k: str(v) for k, v in doc_obj.items() if k not in {"text", "title", "section", "source"}}
+        metadata = {
+            k: str(v)
+            for k, v in doc_obj.items()
+            if k not in {"text", "title", "section", "source"}
+        }
         if idx is not None:
             metadata.setdefault("index", str(idx))
 
         doc_id = _deterministic_doc_id(text, source, section)
-        return Document(doc_id=doc_id, text=text, source=source, title=title, section=section, metadata=metadata)
+        return Document(
+            doc_id=doc_id,
+            text=text,
+            source=source,
+            title=title,
+            section=section,
+            metadata=metadata,
+        )
 
     if isinstance(payload, list):
         return [_build(item, idx=i) for i, item in enumerate(payload)]
@@ -131,12 +141,23 @@ def _load_json_obj(obj: object, path: Path, idx: int) -> List[Document]:
         section = doc_obj.get("section")
         source = str(doc_obj.get("source") or path)
 
-        metadata = {k: str(v) for k, v in doc_obj.items() if k not in {"text", "title", "section", "source"}}
+        metadata = {
+            k: str(v)
+            for k, v in doc_obj.items()
+            if k not in {"text", "title", "section", "source"}
+        }
         if i is not None:
             metadata.setdefault("index", str(i))
 
         doc_id = _deterministic_doc_id(text, source, section)
-        return Document(doc_id=doc_id, text=text, source=source, title=title, section=section, metadata=metadata)
+        return Document(
+            doc_id=doc_id,
+            text=text,
+            source=source,
+            title=title,
+            section=section,
+            metadata=metadata,
+        )
 
     if isinstance(obj, list):
         return [_build(item, i=idx) for i, item in enumerate(obj)]
@@ -197,4 +218,10 @@ def ingest_documents(paths: Sequence[Union[str, Path]]) -> List[Document]:
     return documents
 
 
-__all__ = ["Document", "ingest_documents", "load_document", "normalize_text", "SUPPORTED_EXTENSIONS"]
+__all__ = [
+    "Document",
+    "ingest_documents",
+    "load_document",
+    "normalize_text",
+    "SUPPORTED_EXTENSIONS",
+]

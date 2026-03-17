@@ -18,26 +18,25 @@ own.
 
 from __future__ import annotations
 
-import time
-import os
 import logging
+import os
 import shutil
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 from .chunking import chunk_documents
 from .config import Settings
+from .diversity import apply_diversity_filter
 from .evaluation import is_abstention
 from .generation import generate_answer
-from .ingestion import ingest_documents
 from .index_artifacts import IndexContext, compute_corpus_fingerprint
-from .diversity import apply_diversity_filter
-from .retrieval import BaseRetriever, RetrievalResult, build_retriever_from_config, HybridRetriever
-from .schemas import Chunk, Document, GeneratedAnswer, QueryTrace, StageTimings
-from .reranking import BaseReranker, KeywordOverlapReranker, build_reranker_from_config
+from .ingestion import ingest_documents
 from .logging_utils import log_event
-
+from .reranking import BaseReranker, KeywordOverlapReranker, build_reranker_from_config
+from .retrieval import BaseRetriever, HybridRetriever, RetrievalResult, build_retriever_from_config
+from .schemas import Chunk, Document, GeneratedAnswer, QueryTrace, StageTimings
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -132,7 +131,9 @@ class RAGPipeline:
 
     # Corpus + index setup ---------------------------------------------
 
-    def load_corpus(self, sources: Optional[Sequence[str | Path]] = None, *, force: bool = False) -> None:
+    def load_corpus(
+        self, sources: Optional[Sequence[str | Path]] = None, *, force: bool = False
+    ) -> None:
         """Ingest and chunk documents, caching results for reuse."""
 
         if self._chunks and not force:
@@ -159,7 +160,9 @@ class RAGPipeline:
             chunk_overlap=self.settings.retrieval.chunk_overlap,
         )
         if not self._chunks:
-            raise ValueError("Chunking produced no results; check chunking parameters or input texts.")
+            raise ValueError(
+                "Chunking produced no results; check chunking parameters or input texts."
+            )
         self._retriever_ready = False
         self._apply_index_context()
 
@@ -167,7 +170,9 @@ class RAGPipeline:
         """Build or rebuild the retriever index over current chunks."""
 
         if retriever_name and retriever_name != self._retriever.name:
-            self._retriever = build_retriever_from_config(self.settings, retriever_name=retriever_name)
+            self._retriever = build_retriever_from_config(
+                self.settings, retriever_name=retriever_name
+            )
             self._retriever_ready = False
             self._apply_index_context()
 
@@ -203,7 +208,11 @@ class RAGPipeline:
             self._apply_index_context_to(retriever)
             if force:
                 try:
-                    target = self._index_context.retriever_dir(retriever.name) if self._index_context else None
+                    target = (
+                        self._index_context.retriever_dir(retriever.name)
+                        if self._index_context
+                        else None
+                    )
                     if target and target.exists():
                         shutil.rmtree(target)
                 except Exception as exc:  # pragma: no cover - defensive
@@ -248,14 +257,20 @@ class RAGPipeline:
         self.index(retriever_name=retriever_name)
 
         k = top_k or self.settings.retrieval.top_k
-        rerank_enabled = use_reranker if use_reranker is not None else self.settings.retrieval.use_reranker
+        rerank_enabled = (
+            use_reranker if use_reranker is not None else self.settings.retrieval.use_reranker
+        )
         diversity_enabled = self.settings.retrieval.enable_diversity_filter
 
         if rerank_enabled and self._reranker is None:
             self._reranker = build_reranker_from_config(self.settings)
 
         # Fetch enough candidates to allow reranking and diversity filtering when requested.
-        candidate_k = max(k, self.settings.retrieval.reranker_top_n) if (rerank_enabled or diversity_enabled) else k
+        candidate_k = (
+            max(k, self.settings.retrieval.reranker_top_n)
+            if (rerank_enabled or diversity_enabled)
+            else k
+        )
 
         total_start = time.perf_counter()
 

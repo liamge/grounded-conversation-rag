@@ -21,11 +21,11 @@ from rapidfuzz import fuzz
 
 from .chunking import chunk_document
 from .config import Settings
+from .diversity import apply_diversity_filter
 from .generation import generate_answer
 from .ingestion import ingest_documents
 from .retrieval import BaseRetriever, build_retriever_from_config
 from .schemas import Chunk, Document, EvalExample, GeneratedAnswer, RetrievalResult
-from .diversity import apply_diversity_filter
 
 # ---------------------------------------------------------------------------
 # Core metric primitives

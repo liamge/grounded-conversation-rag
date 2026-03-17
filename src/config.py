@@ -8,8 +8,8 @@ validation for safety.
 
 from __future__ import annotations
 
-import os
 import ast
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -19,7 +19,8 @@ try:  # Pydantic v2
     from pydantic import BaseModel, ConfigDict, field_validator
     _HAS_PYDANTIC_V2 = True
 except ImportError:  # Fallback for environments still on pydantic v1
-    from pydantic import BaseModel, validator as field_validator  # type: ignore
+    from pydantic import BaseModel  # type: ignore
+    from pydantic import validator as field_validator
 
     ConfigDict = None  # type: ignore
     _HAS_PYDANTIC_V2 = False

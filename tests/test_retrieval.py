@@ -1,16 +1,15 @@
 import numpy as np
-import pytest
 
 from src.chunking import Chunk
 from src.config import Settings
 from src.retrieval import (
+    BaseRetriever,
     BM25Retriever,
     DenseRetriever,
     HybridRetriever,
     RetrievalResult,
     TfidfRetriever,
     build_retriever_from_config,
-    BaseRetriever,
 )
 
 
@@ -34,7 +33,14 @@ class DummyModel:
     def __init__(self, vectors):
         self.vectors = np.array(vectors, dtype=float)
 
-    def encode(self, texts, batch_size=1, show_progress_bar=False, convert_to_numpy=True, normalize_embeddings=False):
+    def encode(
+        self,
+        texts,
+        batch_size=1,
+        show_progress_bar=False,
+        convert_to_numpy=True,
+        normalize_embeddings=False,
+    ):
         # Return stored vectors for corpus; for query, use first vector
         if len(texts) == len(self.vectors):
             return self.vectors
@@ -64,7 +70,12 @@ def test_bm25_retriever_basic():
 def test_dense_retriever_with_dummy_model():
     chunks = _make_chunks(["first", "second"])
     dummy_vectors = [[1, 0], [0, 1]]
-    retriever = DenseRetriever(model_name="dummy", model=DummyModel(dummy_vectors), top_k=2, normalize_embeddings=False)
+    retriever = DenseRetriever(
+        model_name="dummy",
+        model=DummyModel(dummy_vectors),
+        top_k=2,
+        normalize_embeddings=False,
+    )
     retriever.index(chunks)
     results = retriever.search("query")
     assert [r.chunk.chunk_id for r in results] == ["c0", "c1"]
@@ -101,7 +112,13 @@ def test_hybrid_fusion_prefers_weighted_scores():
     chunks = _make_chunks(["a", "b"])
     lexical = _StubRetriever(scores=[0.9, 0.1])
     dense = _StubRetriever(scores=[0.2, 0.8])
-    hybrid = HybridRetriever(lexical=lexical, dense=dense, weight_lexical=0.3, weight_dense=0.7, top_k=2)
+    hybrid = HybridRetriever(
+        lexical=lexical,
+        dense=dense,
+        weight_lexical=0.3,
+        weight_dense=0.7,
+        top_k=2,
+    )
     hybrid.index(chunks)
     results = hybrid.search("anything", top_k=2)
     # Dense score dominates, so chunk1 should be ranked first

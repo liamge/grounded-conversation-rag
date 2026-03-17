@@ -1,7 +1,6 @@
-import pytest
 
-from src.schemas import Chunk, RetrievalResult
 from src.diversity import apply_diversity_filter
+from src.schemas import Chunk, RetrievalResult
 
 
 def _make_result(chunk_id, text, doc_id, score):

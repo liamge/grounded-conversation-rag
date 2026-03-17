@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from src.ingestion import Document, ingest_documents, load_document, normalize_text
+from src.ingestion import ingest_documents, load_document, normalize_text
 
 
 def test_markdown_title_extraction(tmp_path: Path) -> None:

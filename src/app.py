@@ -35,7 +35,13 @@ except ImportError:  # pragma: no cover
         sys.path.append(str(PROJECT_ROOT))
     from src.config import Settings, is_truthy_env  # type: ignore
     from src.pipeline import PipelineResult, RAGPipeline  # type: ignore
-    from src.schemas import Chunk, GeneratedAnswer, QueryTrace, RetrievalResult, StageTimings  # type: ignore
+    from src.schemas import (  # type: ignore
+        Chunk,
+        GeneratedAnswer,
+        QueryTrace,
+        RetrievalResult,
+        StageTimings,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +150,11 @@ _ALL_RETRIEVAL_LABELS: Dict[str, str] = {
 
 def _retrieval_labels() -> Dict[str, str]:
     if _dense_disabled():
-        return {label: name for label, name in _ALL_RETRIEVAL_LABELS.items() if name in {"bm25", "tfidf"}}
+        return {
+            label: name
+            for label, name in _ALL_RETRIEVAL_LABELS.items()
+            if name in {"bm25", "tfidf"}
+        }
     return _ALL_RETRIEVAL_LABELS
 _API_URL = os.getenv("RAG_API_URL", "").strip()
 _USE_REMOTE_API = bool(_API_URL)
@@ -257,7 +267,11 @@ def _timings_from_payload(raw: Dict[str, object]) -> Optional[StageTimings]:
 
 def _trace_from_payload(raw: Dict[str, object]) -> QueryTrace:
     ts_raw = raw.get("timestamp")
-    timestamp = datetime.fromisoformat(ts_raw) if isinstance(ts_raw, str) and ts_raw else datetime.utcnow()
+    timestamp = (
+        datetime.fromisoformat(ts_raw)
+        if isinstance(ts_raw, str) and ts_raw
+        else datetime.utcnow()
+    )
     return QueryTrace(
         query=str(raw.get("query", "")),
         latency_ms=float(raw.get("latency_ms", 0.0)),
@@ -288,9 +302,18 @@ def _answer_from_payload(raw: Dict[str, object]) -> GeneratedAnswer:
 
 
 def _pipeline_result_from_api(payload: Dict[str, object]) -> PipelineResult:
-    retrieval_results = [_retrieval_from_payload(rec) for rec in payload.get("retrieval_results", [])]
-    reranked_candidates = [_retrieval_from_payload(rec) for rec in payload.get("reranked_candidates", [])]
-    reranked_results = [_retrieval_from_payload(rec) for rec in payload.get("retrieved_chunks", [])]
+    retrieval_results = [
+        _retrieval_from_payload(rec)
+        for rec in payload.get("retrieval_results", [])
+    ]
+    reranked_candidates = [
+        _retrieval_from_payload(rec)
+        for rec in payload.get("reranked_candidates", [])
+    ]
+    reranked_results = [
+        _retrieval_from_payload(rec)
+        for rec in payload.get("retrieved_chunks", [])
+    ]
     trace = _trace_from_payload(payload.get("trace", {}))
     answer = _answer_from_payload(
         {
@@ -322,7 +345,9 @@ def _pipeline_result_from_api(payload: Dict[str, object]) -> PipelineResult:
     )
 
 
-def _run_query_via_api(query: str, retriever_name: str, top_k: int, use_reranker: bool) -> PipelineResult:
+def _run_query_via_api(
+    query: str, retriever_name: str, top_k: int, use_reranker: bool
+) -> PipelineResult:
     if not _API_URL:
         raise RuntimeError("RAG_API_URL is not configured.")
 
@@ -367,7 +392,9 @@ def render_answer(result: PipelineResult) -> None:
     if result.answer.provider.startswith("lightweight"):
         st.caption("Using lightweight sentence-level extractive generator (no external API).")
     if not result.answer.supported:
-        st.warning("Answer is unsupported because no valid citations were found in the provided context.")
+        st.warning(
+            "Answer is unsupported because no valid citations were found in the provided context."
+        )
 
     with st.expander("View prompt + context", expanded=False):
         st.code(result.prompt, language="markdown")
@@ -386,7 +413,11 @@ def render_chunks(results: Sequence[RetrievalResult], title: str = "Retrieved Ch
         score_str = _format_score(res.score)
         st.markdown(f"<div id='{chunk.chunk_id}'></div>", unsafe_allow_html=True)
         with st.expander(f"{header} — score {score_str} — {chunk.source}"):
-            st.markdown(f"**Chunk ID:** `{chunk.chunk_id}` · **Retriever:** `{res.retriever}` · **Section:** {chunk.section or 'n/a'}")
+            st.markdown(
+                "**Chunk ID:** `"
+                f"{chunk.chunk_id}` · **Retriever:** `{res.retriever}` · **Section:** "
+                f"{chunk.section or 'n/a'}"
+            )
             st.write(chunk.text)
 
             metadata = {**chunk.metadata, "doc_id": chunk.doc_id, "source": chunk.source}
@@ -477,7 +508,9 @@ def render_architecture_section(result: Optional[PipelineResult]) -> None:
             st.caption("Computed from this browser session; great for quick screenshots.")
 
 
-def render_diagnostics_tab(pipeline: Optional[RAGPipeline], result: Optional[PipelineResult]) -> None:
+def render_diagnostics_tab(
+    pipeline: Optional[RAGPipeline], result: Optional[PipelineResult]
+) -> None:
     """Deep-dive diagnostics for retrieval quality and latency."""
 
     st.subheader("Retrieval Diagnostics")
@@ -538,12 +571,21 @@ def render_diagnostics_tab(pipeline: Optional[RAGPipeline], result: Optional[Pip
                 "source": res.chunk.source,
                 "doc_id": res.chunk.doc_id,
                 "title": res.chunk.title,
-                "preview": (res.chunk.text[:180] + "...") if len(res.chunk.text) > 180 else res.chunk.text,
+                "preview": (res.chunk.text[:180] + "...")
+                if len(res.chunk.text) > 180
+                else res.chunk.text,
                 "raw_rank": raw_res.rank if raw_res else None,
                 "raw_score": raw_res.score if raw_res else None,
                 "rerank_rank": res.rank,
                 "rerank_score": res.score,
-                "final_rank": next((f.rank for f in result.reranked_results if f.chunk.chunk_id == chunk_id), None),
+                "final_rank": next(
+                    (
+                        f.rank
+                        for f in result.reranked_results
+                        if f.chunk.chunk_id == chunk_id
+                    ),
+                    None,
+                ),
                 "kept_after_diversity": chunk_id in final_ids,
             }
         )
@@ -561,14 +603,19 @@ def render_diagnostics_tab(pipeline: Optional[RAGPipeline], result: Optional[Pip
                 "chunk_id": res.chunk.chunk_id,
                 "source": res.chunk.source,
                 "doc_id": res.chunk.doc_id,
-                "preview": (res.chunk.text[:120] + "...") if len(res.chunk.text) > 120 else res.chunk.text,
+                "preview": (res.chunk.text[:120] + "...")
+                if len(res.chunk.text) > 120
+                else res.chunk.text,
                 "score": res.score,
             }
             for res in result.reranked_results
         ]
         st.dataframe(source_rows, hide_index=True, use_container_width=True)
         source_df = pd.DataFrame(source_rows)
-        grouped = source_df.groupby("source").agg(chunks=("chunk_id", "count"), avg_score=("score", "mean"))
+        grouped = source_df.groupby("source").agg(
+            chunks=("chunk_id", "count"),
+            avg_score=("score", "mean"),
+        )
         grouped = grouped.reset_index().sort_values(by="chunks", ascending=False)
         st.bar_chart(grouped.set_index("source"), use_container_width=True)
     else:
@@ -613,7 +660,12 @@ def render_diagnostics_tab(pipeline: Optional[RAGPipeline], result: Optional[Pip
                 .sort_values(by="queries", ascending=False)
             )
             st.dataframe(grouped, hide_index=True, use_container_width=True)
-            fig = px.bar(grouped, x="retriever", y="avg_latency_ms", title="Avg latency by retriever")
+            fig = px.bar(
+                grouped,
+                x="retriever",
+                y="avg_latency_ms",
+                title="Avg latency by retriever",
+            )
             st.plotly_chart(fig, use_container_width=True)
 
     if context_toggle:
@@ -706,7 +758,9 @@ def render_evaluation_tab(pipeline: Optional[RAGPipeline]) -> None:
     if not runs:
         st.info("Evaluation artifacts not found. Generate them via the CLI:")
         st.code("python -m src.cli eval --report-prefix eval", language="bash")
-        st.caption("Artifacts write to <prefix>_summary.json and <prefix>_results.csv under reports/.")
+        st.caption(
+            "Artifacts write to <prefix>_summary.json and <prefix>_results.csv under reports/."
+        )
         return
 
     st.markdown("### Aggregate metrics (per run)")
@@ -731,7 +785,9 @@ def render_evaluation_tab(pipeline: Optional[RAGPipeline]) -> None:
                 except ValueError:
                     continue
                 metric_name = "Recall@k" if key.startswith("recall@") else "Precision@k"
-                retrieval_rows.append({"run": label, "k": k_val, "score": value, "metric": metric_name})
+                retrieval_rows.append(
+                    {"run": label, "k": k_val, "score": value, "metric": metric_name}
+                )
 
     agg_df = pd.DataFrame(agg_rows)
     if not agg_df.empty:
