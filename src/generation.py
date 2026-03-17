@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .config import Settings, is_truthy_env
@@ -177,6 +178,7 @@ def _split_sentences(text: str) -> List[str]:
     cleaned = " ".join(text.replace("\n", " ").split())
     if not cleaned:
         return []
+    # Treat common sentence enders as boundaries while keeping determinism.
     parts = re.split(r"(?<=[.!?])\s+", cleaned)
     return [p.strip() for p in parts if p.strip()]
 
@@ -272,50 +274,124 @@ class OpenAIChatGenerator(BaseGenerator):
         )
 
 
-class ExtractiveDemoGenerator(BaseGenerator):
-    """Lightweight, dependency-free extractive summarizer for demos.
+@dataclass(slots=True)
+class _CandidateSentence:
+    chunk_id: str
+    text: str
+    score: float
 
-    Produces concise bullets selected from top-ranked chunks. No external API
-    keys or model downloads required.
+
+def _normalize_sentence(text: str) -> str:
+    cleaned = re.sub(r"\s+", " ", text).strip()
+    # Trim stray quotes or trailing punctuation fragments (ASCII only)
+    cleaned = cleaned.strip('"\' ')
+    cleaned = cleaned.rstrip(" ,;:-")
+    cleaned = re.sub(r"\b(\w+)\s+\1\b", r"\1", cleaned, flags=re.IGNORECASE)
+    if len(cleaned) > 320:
+        cleaned = cleaned[:320].rstrip(" ,;:-") + "…"
+    return cleaned
+
+
+def _jaccard_similarity(a: str, b: str) -> float:
+    a_tokens = set(_tokenize(a.lower()))
+    b_tokens = set(_tokenize(b.lower()))
+    if not a_tokens or not b_tokens:
+        return 0.0
+    intersection = len(a_tokens & b_tokens)
+    union = len(a_tokens | b_tokens)
+    return intersection / union
+
+
+class LightweightExtractiveGenerator(BaseGenerator):
+    """Sentence-level extractive generator with inline citations.
+
+    Designed for demo/hosted defaults: deterministic, citation-aware, and
+    dependency-light (no external APIs or local model weights).
     """
 
-    name = "extractive"
+    name = "lightweight_extractive"
 
-    def __init__(self, max_sentences: int = 3, model: str = "demo-extractive") -> None:
+    def __init__(self, max_sentences: int = 4, model: str = "lite-extractive-1") -> None:
         self.max_sentences = max_sentences
         self.model = model
+        self._redundancy_threshold = 0.82
 
-    @staticmethod
-    def _score_sentence(sentence: str, query_terms: set[str], rank: int) -> float:
-        tokens = {tok.lower() for tok in _tokenize(sentence)}
+    def _score_sentence(
+        self,
+        sentence: str,
+        query_terms: set[str],
+        retrieval_norm: float,
+        rank: int,
+        position: int,
+    ) -> float:
+        tokens = set(_tokenize(sentence.lower()))
         if not tokens:
             return 0.0
+
         overlap = len(tokens & query_terms)
-        coverage = overlap / len(tokens)
-        rank_bonus = max(0.0, 4 - rank) * 0.2  # reward higher-ranked chunks
-        return overlap * 1.5 + coverage + rank_bonus
+        coverage = overlap / max(len(tokens), 1)
 
-    def _select_sentences(
-        self, question: str, retrieved: Sequence[RetrievalResult], allowed_ids: Optional[Sequence[str]] = None
-    ) -> List[Tuple[str, str]]:
+        keyword_score = overlap * 1.3 + coverage
+        retrieval_score = retrieval_norm * 1.4
+        rank_bonus = max(0.0, 0.6 - 0.08 * (rank - 1))
+        position_bonus = max(0.0, 0.25 - 0.05 * position)
+
+        return keyword_score + retrieval_score + rank_bonus + position_bonus
+
+    def _collect_candidates(
+        self,
+        question: str,
+        retrieved: Sequence[RetrievalResult],
+        allowed_ids: Sequence[str],
+    ) -> List[_CandidateSentence]:
         query_terms = {tok.lower() for tok in _tokenize(question)}
-        selections: List[Tuple[str, str, float]] = []
-        allowed = set(allowed_ids) if allowed_ids else None
+        max_score = max((res.score for res in retrieved), default=0.0)
 
-        for res in retrieved[:5]:  # stay focused on the top evidence
-            chunk_id = res.chunk.chunk_id
-            if allowed is not None and chunk_id not in allowed:
+        candidates: List[_CandidateSentence] = []
+        for res in retrieved:
+            if res.chunk.chunk_id not in allowed_ids:
                 continue
-            sentences = _split_sentences(res.chunk.text) or [res.chunk.text.strip()]
-            for sent_idx, sentence in enumerate(sentences):
-                score = self._score_sentence(sentence, query_terms, res.rank)
-                # deterministic tie-breaker via original order
-                selections.append((chunk_id, sentence, score - sent_idx * 0.001))
 
-        # Sort by score descending, keep stable order for equal scores.
-        selections.sort(key=lambda tup: tup[2], reverse=True)
-        top = selections[: self.max_sentences]
-        return [(chunk_id, sentence) for chunk_id, sentence, _ in top]
+            retrieval_norm = (res.score / max_score) if max_score > 0 else 0.0
+            sentences = _split_sentences(res.chunk.text) or [res.chunk.text.strip()]
+            for position, sentence in enumerate(sentences):
+                normalized = _normalize_sentence(sentence)
+                if not normalized:
+                    continue
+                score = self._score_sentence(normalized, query_terms, retrieval_norm, res.rank, position)
+                # small deterministic tie-breaker favors earlier sentences
+                score -= position * 0.001
+                candidates.append(_CandidateSentence(res.chunk.chunk_id, normalized, score))
+
+        candidates.sort(key=lambda c: c.score, reverse=True)
+        return candidates
+
+    def _select_sentences(self, candidates: Sequence[_CandidateSentence]) -> List[_CandidateSentence]:
+        selected: List[_CandidateSentence] = []
+        for cand in candidates:
+            if len(selected) >= self.max_sentences:
+                break
+            if any(_jaccard_similarity(cand.text, kept.text) >= self._redundancy_threshold for kept in selected):
+                continue
+            selected.append(cand)
+        return selected
+
+    def _compose_answer(self, selected: Sequence[_CandidateSentence]) -> str:
+        if not selected:
+            return "I don't have enough evidence to answer confidently."
+
+        lead = selected[0]
+        bullets = selected[1:]
+
+        lines: List[str] = [f"{lead.text} [{lead.chunk_id}]"]
+        if bullets:
+            lines.append("")
+            for cand in bullets:
+                lines.append(f"- {cand.text} [{cand.chunk_id}]")
+        lines.append("")
+        lines.append("Lightweight grounded generator (no external API).")
+
+        return "\n".join(line for line in lines if line.strip())
 
     def generate(
         self,
@@ -337,31 +413,13 @@ class ExtractiveDemoGenerator(BaseGenerator):
             context_block=context_block,
         )
 
-        if not retrieved:
-            fallback_answer = (
-                "Demo summary: no context available yet. Add documents or try another query."
-            )
-            return _finalize_generated_answer(
-                raw_answer=fallback_answer,
-                retrieved=retrieved,
-                used_chunk_ids=used_chunk_ids,
-                prompt=prompt,
-                context_block=context_block,
-                truncation_metadata=truncation_metadata,
-                provider=self.name,
-                model=self.model,
-            )
+        candidates = self._collect_candidates(question, retrieved, used_chunk_ids)
+        selected = self._select_sentences(candidates)
 
-        selected = self._select_sentences(question, retrieved, allowed_ids=used_chunk_ids)
-        if not selected:
-            selected = [(retrieved[0].chunk.chunk_id, self._fallback_sentence(retrieved[0].chunk.text))]
-
-        bullets = [f"- {sentence.strip()} [{chunk_id}]" for chunk_id, sentence in selected]
-        preamble = "Grounded summary (demo mode — extractive, no API key required):"
-        answer = "\n".join([preamble, *bullets])
+        raw_answer = self._compose_answer(selected)
 
         return _finalize_generated_answer(
-            raw_answer=answer,
+            raw_answer=raw_answer,
             retrieved=retrieved,
             used_chunk_ids=used_chunk_ids,
             prompt=prompt,
@@ -370,11 +428,6 @@ class ExtractiveDemoGenerator(BaseGenerator):
             provider=self.name,
             model=self.model,
         )
-
-    @staticmethod
-    def _fallback_sentence(text: str) -> str:
-        normalized = " ".join(text.split())
-        return normalized[:200] + ("…" if len(normalized) > 200 else "")
 
 
 class LocalTransformersGenerator(BaseGenerator):
@@ -548,11 +601,11 @@ class DeterministicFallbackGenerator(BaseGenerator):
 def build_generator(settings: Settings, client: Any | None = None) -> BaseGenerator:
     """Factory that prefers the configured provider but falls back gracefully."""
 
-    provider = (settings.models.llm_provider or "fallback").lower()
+    provider = (settings.models.llm_provider or "lightweight").lower()
     model = settings.models.llm_model
     demo_mode = settings.demo_mode or is_truthy_env("RAG_DEMO_MODE")
     api_key = os.getenv("OPENAI_API_KEY")
-    prefer_openai = api_key and not demo_mode and provider in {"openai", "fallback", "demo", "extractive"}
+    prefer_openai = bool(api_key) and not demo_mode and provider == "openai"
 
     if prefer_openai:
         try:
@@ -565,15 +618,15 @@ def build_generator(settings: Settings, client: Any | None = None) -> BaseGenera
         try:
             return LocalTransformersGenerator(model=model)
         except Exception:
-            return ExtractiveDemoGenerator()
+            return LightweightExtractiveGenerator()
 
-    if provider in {"demo", "extractive", "fallback"} or demo_mode:
-        return ExtractiveDemoGenerator()
+    if provider in {"demo", "extractive", "fallback", "lightweight"} or demo_mode:
+        return LightweightExtractiveGenerator()
 
     if provider == "deterministic":
         return DeterministicFallbackGenerator(model="deterministic-fallback")
 
-    return ExtractiveDemoGenerator()
+    return LightweightExtractiveGenerator()
 
 
 def generate_answer(
@@ -692,7 +745,7 @@ __all__ = [
     "format_grounded_prompt",
     "BaseGenerator",
     "OpenAIChatGenerator",
-    "ExtractiveDemoGenerator",
+    "LightweightExtractiveGenerator",
     "LocalTransformersGenerator",
     "DeterministicFallbackGenerator",
     "build_generator",

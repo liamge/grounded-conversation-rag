@@ -1,5 +1,11 @@
 from src.config import Settings
-from src.generation import assemble_context_with_budget, build_generator, generate_answer, ExtractiveDemoGenerator
+from src.generation import (
+    LightweightExtractiveGenerator,
+    assemble_context_with_budget,
+    build_generator,
+    generate_answer,
+    _split_sentences,
+)
 from src.schemas import Chunk, RetrievalResult
 
 
@@ -67,18 +73,51 @@ def test_generate_uses_extractive_demo_when_no_keys(monkeypatch) -> None:
 
     generator = build_generator(settings)
 
-    assert isinstance(generator, ExtractiveDemoGenerator)
+    assert isinstance(generator, LightweightExtractiveGenerator)
 
 
-def test_extractive_demo_outputs_citations(monkeypatch) -> None:
+def test_sentence_split_basic() -> None:
+    text = "This is one. And another? Last!"
+    sentences = _split_sentences(text)
+
+    assert sentences == ["This is one.", "And another?", "Last!"]
+
+
+def test_lightweight_generator_prefers_relevant_sentences(monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     settings = Settings()
     retrieved = [
-        _res("chunk_a", "First chunk about the pipeline and retrieval scoring."),
-        _res("chunk_b", "Another section explaining evaluation metrics and latency."),
+        _res("chunk_a", "The pipeline uses hybrid retrieval. It blends dense and lexical signals."),
+        _res("chunk_b", "Unrelated filler text with no useful info."),
     ]
 
-    answer = generate_answer("How is retrieval scored?", retrieved, settings=settings)
+    answer = generate_answer("How does the pipeline combine signals?", retrieved, settings=settings)
 
-    assert answer.citations
-    assert "Grounded summary" in answer.answer
+    assert answer.citations == ["chunk_a"]
+    assert "hybrid retrieval" in answer.answer.lower()
+
+
+def test_lightweight_generator_deduplicates_similar_sentences(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    settings = Settings()
+    retrieved = [
+        _res("chunk_a", "Hybrid retrieval combines lexical and dense scores. Hybrid retrieval combines lexical and dense scores."),
+        _res("chunk_b", "Lexical and dense scores are merged in the hybrid approach."),
+    ]
+
+    generator = LightweightExtractiveGenerator(max_sentences=3)
+    answer = generator.generate("What is hybrid retrieval?", retrieved)
+
+    # Only one variant should remain after redundancy filtering
+    assert answer.answer.count("chunk_a") + answer.answer.count("chunk_b") <= 2
+    assert len(answer.citations) == len(set(answer.citations))
+
+
+def test_fallback_routing_ignores_openai_when_not_requested(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "dummy")
+    settings = Settings()
+    settings.models.llm_provider = "fallback"
+
+    generator = build_generator(settings)
+
+    assert isinstance(generator, LightweightExtractiveGenerator)

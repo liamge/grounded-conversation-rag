@@ -25,7 +25,7 @@ models:
   embedding_model: sentence-transformers/all-MiniLM-L6-v2
   reranker_model: cross-encoder/ms-marco-MiniLM-L-6-v2
   llm_model: gpt-4o-mini
-  llm_provider: fallback
+  llm_provider: lightweight
   # Note: the OpenAI client reads OPENAI_API_KEY from the environment; no key is stored in config.
 
 output:

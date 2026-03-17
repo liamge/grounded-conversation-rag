@@ -162,7 +162,7 @@ class ModelConfig(_BaseConfigModel):
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     llm_model: str = "gpt-4o-mini"
-    llm_provider: str = "fallback"
+    llm_provider: str = "lightweight"
     tokenizer_name: Optional[str] = None
 
 
@@ -273,7 +273,7 @@ class Settings(_BaseConfigModel):
             self.app.default_retriever = "bm25"
 
         if "RAG_MODELS__LLM_PROVIDER" not in os.environ:
-            self.models.llm_provider = "fallback"
+            self.models.llm_provider = "lightweight"
 
         # Ensure downstream checks see dense retrieval as off unless explicitly re-enabled.
         if "RAG_DISABLE_DENSE" not in os.environ:

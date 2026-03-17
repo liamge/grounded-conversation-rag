@@ -179,7 +179,7 @@ def _mode_badges(settings: Settings) -> List[str]:
     provider = (settings.models.llm_provider or "fallback").lower()
     api_key = bool(os.getenv("OPENAI_API_KEY"))
     demo_flag = settings.demo_mode or _DEMO_MODE
-    prefer_openai = api_key and not demo_flag and provider in {"openai", "fallback", "demo", "extractive"}
+    prefer_openai = api_key and not demo_flag and provider == "openai"
 
     if demo_flag:
         badges.append("Demo mode (lightweight)")
@@ -191,7 +191,7 @@ def _mode_badges(settings: Settings) -> List[str]:
     elif provider in {"local", "transformers", "hf"}:
         badges.append("Local tiny model (opt-in)")
     else:
-        badges.append("Lightweight summarizer")
+        badges.append("Lightweight grounded generator")
 
     if not prefer_openai:
         badges.append("No external API required")
@@ -363,6 +363,8 @@ def render_answer(result: PipelineResult) -> None:
             " ".join(f"<a class='pill' href='#{cid}'>{cid}</a>" for cid in result.answer.citations),
             unsafe_allow_html=True,
         )
+    if result.answer.provider.startswith("lightweight"):
+        st.caption("Using lightweight sentence-level extractive generator (no external API).")
     if not result.answer.supported:
         st.warning("Answer is unsupported because no valid citations were found in the provided context.")
 
