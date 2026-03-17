@@ -18,7 +18,7 @@ import os
 import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from .config import Settings
+from .config import Settings, is_truthy_env
 from .schemas import Chunk, GeneratedAnswer, RetrievalResult
 
 DEFAULT_CONTEXT_CHARS = 2_400
@@ -171,6 +171,16 @@ def format_grounded_prompt(
     return prompt
 
 
+def _split_sentences(text: str) -> List[str]:
+    """Lightweight sentence splitter that avoids extra dependencies."""
+
+    cleaned = " ".join(text.replace("\n", " ").split())
+    if not cleaned:
+        return []
+    parts = re.split(r"(?<=[.!?])\s+", cleaned)
+    return [p.strip() for p in parts if p.strip()]
+
+
 # ---------------------------------------------------------------------------
 # Provider-agnostic generator interface
 # ---------------------------------------------------------------------------
@@ -262,6 +272,179 @@ class OpenAIChatGenerator(BaseGenerator):
         )
 
 
+class ExtractiveDemoGenerator(BaseGenerator):
+    """Lightweight, dependency-free extractive summarizer for demos.
+
+    Produces concise bullets selected from top-ranked chunks. No external API
+    keys or model downloads required.
+    """
+
+    name = "extractive"
+
+    def __init__(self, max_sentences: int = 3, model: str = "demo-extractive") -> None:
+        self.max_sentences = max_sentences
+        self.model = model
+
+    @staticmethod
+    def _score_sentence(sentence: str, query_terms: set[str], rank: int) -> float:
+        tokens = {tok.lower() for tok in _tokenize(sentence)}
+        if not tokens:
+            return 0.0
+        overlap = len(tokens & query_terms)
+        coverage = overlap / len(tokens)
+        rank_bonus = max(0.0, 4 - rank) * 0.2  # reward higher-ranked chunks
+        return overlap * 1.5 + coverage + rank_bonus
+
+    def _select_sentences(
+        self, question: str, retrieved: Sequence[RetrievalResult], allowed_ids: Optional[Sequence[str]] = None
+    ) -> List[Tuple[str, str]]:
+        query_terms = {tok.lower() for tok in _tokenize(question)}
+        selections: List[Tuple[str, str, float]] = []
+        allowed = set(allowed_ids) if allowed_ids else None
+
+        for res in retrieved[:5]:  # stay focused on the top evidence
+            chunk_id = res.chunk.chunk_id
+            if allowed is not None and chunk_id not in allowed:
+                continue
+            sentences = _split_sentences(res.chunk.text) or [res.chunk.text.strip()]
+            for sent_idx, sentence in enumerate(sentences):
+                score = self._score_sentence(sentence, query_terms, res.rank)
+                # deterministic tie-breaker via original order
+                selections.append((chunk_id, sentence, score - sent_idx * 0.001))
+
+        # Sort by score descending, keep stable order for equal scores.
+        selections.sort(key=lambda tup: tup[2], reverse=True)
+        top = selections[: self.max_sentences]
+        return [(chunk_id, sentence) for chunk_id, sentence, _ in top]
+
+    def generate(
+        self,
+        question: str,
+        retrieved: Sequence[RetrievalResult],
+        *,
+        max_context_chars: int = DEFAULT_CONTEXT_CHARS,
+        system_instruction: Optional[str] = None,
+    ) -> GeneratedAnswer:
+        context_block, used_chunk_ids, truncation_metadata = assemble_context_with_budget(
+            retrieved, max_tokens=max_context_chars
+        )
+
+        prompt = format_grounded_prompt(
+            question,
+            retrieved,
+            max_context_chars=max_context_chars,
+            system_instruction=system_instruction,
+            context_block=context_block,
+        )
+
+        if not retrieved:
+            fallback_answer = (
+                "Demo summary: no context available yet. Add documents or try another query."
+            )
+            return _finalize_generated_answer(
+                raw_answer=fallback_answer,
+                retrieved=retrieved,
+                used_chunk_ids=used_chunk_ids,
+                prompt=prompt,
+                context_block=context_block,
+                truncation_metadata=truncation_metadata,
+                provider=self.name,
+                model=self.model,
+            )
+
+        selected = self._select_sentences(question, retrieved, allowed_ids=used_chunk_ids)
+        if not selected:
+            selected = [(retrieved[0].chunk.chunk_id, self._fallback_sentence(retrieved[0].chunk.text))]
+
+        bullets = [f"- {sentence.strip()} [{chunk_id}]" for chunk_id, sentence in selected]
+        preamble = "Grounded summary (demo mode — extractive, no API key required):"
+        answer = "\n".join([preamble, *bullets])
+
+        return _finalize_generated_answer(
+            raw_answer=answer,
+            retrieved=retrieved,
+            used_chunk_ids=used_chunk_ids,
+            prompt=prompt,
+            context_block=context_block,
+            truncation_metadata=truncation_metadata,
+            provider=self.name,
+            model=self.model,
+        )
+
+    @staticmethod
+    def _fallback_sentence(text: str) -> str:
+        normalized = " ".join(text.split())
+        return normalized[:200] + ("…" if len(normalized) > 200 else "")
+
+
+class LocalTransformersGenerator(BaseGenerator):
+    """Optional local generator using tiny Transformers models.
+
+    Requires the ``local_llm`` extra (transformers + torch). Only invoked when
+    explicitly configured via ``RAG_MODELS__LLM_PROVIDER=local``.
+    """
+
+    name = "local"
+
+    def __init__(self, model: str = "sshleifer/tiny-gpt2") -> None:
+        self.model = model
+        self._pipeline: Any | None = None
+
+    def _get_pipeline(self) -> Any:
+        if self._pipeline is not None:
+            return self._pipeline
+        try:
+            from transformers import pipeline  # type: ignore
+        except Exception as exc:  # pragma: no cover - optional dependency
+            raise ImportError(
+                "transformers is required for LocalTransformersGenerator. Install the 'local_llm' extra."
+            ) from exc
+
+        self._pipeline = pipeline(
+            "text-generation",
+            model=self.model,
+            # keep deterministic and small for local laptops
+            do_sample=False,
+        )
+        return self._pipeline
+
+    def generate(
+        self,
+        question: str,
+        retrieved: Sequence[RetrievalResult],
+        *,
+        max_context_chars: int = DEFAULT_CONTEXT_CHARS,
+        system_instruction: Optional[str] = None,
+    ) -> GeneratedAnswer:
+        context_block, used_chunk_ids, truncation_metadata = assemble_context_with_budget(
+            retrieved, max_tokens=max_context_chars
+        )
+
+        prompt = format_grounded_prompt(
+            question,
+            retrieved,
+            max_context_chars=max_context_chars,
+            system_instruction=system_instruction,
+            context_block=context_block,
+        )
+
+        pipe = self._get_pipeline()
+        raw = pipe(prompt, max_new_tokens=120, num_return_sequences=1)[0]["generated_text"]
+        # Strip the prompt prefix if the model echoes it back.
+        answer_text = raw[len(prompt) :].strip() or raw.strip()
+
+        return _finalize_generated_answer(
+            raw_answer=answer_text,
+            retrieved=retrieved,
+            used_chunk_ids=used_chunk_ids,
+            prompt=prompt,
+            context_block=context_block,
+            truncation_metadata=truncation_metadata,
+            provider=self.name,
+            model=self.model,
+        )
+
+
 class DeterministicFallbackGenerator(BaseGenerator):
     """Deterministic generator that works without external APIs.
 
@@ -317,7 +500,7 @@ class DeterministicFallbackGenerator(BaseGenerator):
 
         if not retrieved:
             fallback_answer = (
-                "[Fallback] No context available; I don't have enough evidence to answer confidently."
+                "Grounded fallback: no source snippets are available yet, so I cannot answer confidently."
             )
             return _finalize_generated_answer(
                 raw_answer=fallback_answer,
@@ -345,7 +528,10 @@ class DeterministicFallbackGenerator(BaseGenerator):
         if not summaries:
             summaries = ["- No content available. [unknown]"]
 
-        answer = "\n".join(["[Fallback] Synthesized from retrieved context:", *summaries])
+        answer = "\n".join([
+            "Grounded fallback (deterministic synthesis):",
+            *summaries,
+        ])
 
         return _finalize_generated_answer(
             raw_answer=answer,
@@ -364,15 +550,30 @@ def build_generator(settings: Settings, client: Any | None = None) -> BaseGenera
 
     provider = (settings.models.llm_provider or "fallback").lower()
     model = settings.models.llm_model
+    demo_mode = settings.demo_mode or is_truthy_env("RAG_DEMO_MODE")
+    api_key = os.getenv("OPENAI_API_KEY")
+    prefer_openai = api_key and not demo_mode and provider in {"openai", "fallback", "demo", "extractive"}
 
-    if provider == "openai":
+    if prefer_openai:
         try:
             return OpenAIChatGenerator(model=model, client=client)
         except Exception:
-            # Fall through to deterministic generator if OpenAI unavailable.
+            # Fall through to a lightweight path if OpenAI is unavailable.
             pass
 
-    return DeterministicFallbackGenerator(model="deterministic-fallback")
+    if provider in {"local", "transformers", "hf"}:
+        try:
+            return LocalTransformersGenerator(model=model)
+        except Exception:
+            return ExtractiveDemoGenerator()
+
+    if provider in {"demo", "extractive", "fallback"} or demo_mode:
+        return ExtractiveDemoGenerator()
+
+    if provider == "deterministic":
+        return DeterministicFallbackGenerator(model="deterministic-fallback")
+
+    return ExtractiveDemoGenerator()
 
 
 def generate_answer(
@@ -491,6 +692,8 @@ __all__ = [
     "format_grounded_prompt",
     "BaseGenerator",
     "OpenAIChatGenerator",
+    "ExtractiveDemoGenerator",
+    "LocalTransformersGenerator",
     "DeterministicFallbackGenerator",
     "build_generator",
     "generate_answer",

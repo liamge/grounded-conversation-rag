@@ -29,6 +29,12 @@ DEFAULT_CONFIG_PATH = Path("config/settings.yaml")
 ENV_PREFIX = "RAG_"
 
 
+def is_truthy_env(var_name: str) -> bool:
+    """Return True when the env var is set to a truthy flag (1/true/yes/on)."""
+
+    return os.getenv(var_name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 class _BaseConfigModel(BaseModel):
     """Base model that ignores extra keys across Pydantic v1/v2."""
 
@@ -156,7 +162,7 @@ class ModelConfig(_BaseConfigModel):
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     llm_model: str = "gpt-4o-mini"
-    llm_provider: str = "openai"
+    llm_provider: str = "fallback"
     tokenizer_name: Optional[str] = None
 
 
@@ -176,7 +182,7 @@ class LoggingConfig(_BaseConfigModel):
 
 class AppConfig(_BaseConfigModel):
     title: str = "Grounded Conversation RAG"
-    default_retriever: str = "hybrid"  # lexical | dense | hybrid
+    default_retriever: str = "bm25"  # lexical | dense | hybrid
     host: str = "0.0.0.0"
     port: int = 8501
     debug: bool = False
@@ -187,6 +193,7 @@ class AppConfig(_BaseConfigModel):
 class Settings(_BaseConfigModel):
     """Container for all project configuration groups."""
 
+    demo_mode: bool = False
     data: DataPaths = DataPaths()
     retrieval: RetrievalConfig = RetrievalConfig()
     models: ModelConfig = ModelConfig()
@@ -238,13 +245,39 @@ class Settings(_BaseConfigModel):
         env_overrides = _env_to_nested(env_prefix)
         merged = _deep_merge(base_data, env_overrides)
 
-        return cls._from_mapping(merged)
+        settings = cls._from_mapping(merged)
+        settings._apply_demo_overrides()
+        return settings
 
     @classmethod
     def _from_mapping(cls, payload: Dict[str, Any]) -> "Settings":
         if _HAS_PYDANTIC_V2:
             return cls.model_validate(payload)
         return cls.parse_obj(payload)
+
+    def _apply_demo_overrides(self) -> None:
+        """Force lightweight defaults when demo mode is enabled.
+
+        Demo mode can be toggled via ``RAG_DEMO_MODE=1`` (preferred) or by
+        setting ``demo_mode: true`` in a YAML config. Explicit env overrides
+        such as ``RAG_APP__DEFAULT_RETRIEVER`` or ``RAG_MODELS__LLM_PROVIDER``
+        always win over these defaults.
+        """
+
+        demo_flag = self.demo_mode or is_truthy_env("RAG_DEMO_MODE")
+        self.demo_mode = bool(demo_flag)
+        if not demo_flag:
+            return
+
+        if "RAG_APP__DEFAULT_RETRIEVER" not in os.environ:
+            self.app.default_retriever = "bm25"
+
+        if "RAG_MODELS__LLM_PROVIDER" not in os.environ:
+            self.models.llm_provider = "fallback"
+
+        # Ensure downstream checks see dense retrieval as off unless explicitly re-enabled.
+        if "RAG_DISABLE_DENSE" not in os.environ:
+            os.environ["RAG_DISABLE_DENSE"] = "1"
 
     def to_dict(self) -> Dict[str, Any]:
         """Return the configuration as a plain dictionary."""
@@ -274,4 +307,5 @@ __all__ = [
     "AppConfig",
     "DEFAULT_CONFIG_PATH",
     "ENV_PREFIX",
+    "is_truthy_env",
 ]

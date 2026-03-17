@@ -1,2 +1,2 @@
-# Dev install with linting, coverage, evaluation, and dense retrieval extras
--e .[dev,eval,dense]
+# Dev install with linting, coverage, API, local LLM, and dense retrieval extras
+-e .[dev,eval,dense,api,local_llm]

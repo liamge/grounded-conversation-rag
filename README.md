@@ -6,9 +6,10 @@ Portfolio‑ready RAG system that ingests internal conversations + policies, run
 
 ## Quickstart (reproducible)
 - `python -m venv .venv && source .venv/bin/activate`
-- `pip install -e .` for the minimal stack, or `pip install -e ".[dev,eval,dense]"` to include tests, OpenAI, FAISS, and evaluation extras.
-- Set `OPENAI_API_KEY` if you want live LLM answers; otherwise a deterministic fallback generator is used.
-- Optional: set `RAG_DISABLE_DENSE=1` to skip downloading sentence-transformers weights on first run.
+- `pip install -e .` for the lightweight/demo stack (lexical retrieval + extractive summarizer).
+- Add extras when you want heavier features: `pip install -e ".[dense,local_llm,api,eval,dev]"`.
+- Demo-first defaults: `export RAG_DEMO_MODE=1 RAG_DISABLE_DENSE=1 RAG_MODELS__LLM_PROVIDER=fallback` (mirrors Streamlit Cloud).
+- Set `OPENAI_API_KEY` (and unset `RAG_DEMO_MODE`) when you want live LLM answers; otherwise the demo summarizer runs locally with no API calls.
 - Unified CLI (works in local dev or CI):
   - `python -m src.cli index [--force] [--no-dense] [--config path]` – build indexes and cache artifacts.
   - `python -m src.cli eval [--no-generation] [--no-dense] [--retriever NAME] [--eval-path FILE]` – run the benchmark and write reports to `reports/`.
@@ -38,7 +39,12 @@ Data paths, chunking parameters, models, and app settings live in `config/settin
 source .venv/bin/activate
 streamlit run src/app.py
 ```
-Open http://localhost:8501. The sidebar shows latency + citation counts; the main panel surfaces grounded answers and retrieved chunks. Set `OPENAI_API_KEY` for model-backed answers or rely on the deterministic fallback.
+Open http://localhost:8501. The sidebar shows latency + citation counts; the main panel surfaces grounded answers and retrieved chunks. Set `OPENAI_API_KEY` for model-backed answers or rely on the lightweight demo summarizer.
+
+### Generation fallback tiers
+1. **OpenAI** (if `OPENAI_API_KEY` + `RAG_MODELS__LLM_PROVIDER=openai` are set).
+2. **Local tiny Transformers model** (opt-in via `RAG_MODELS__LLM_PROVIDER=local` and the `local_llm` extra).
+3. **Lightweight extractive demo summarizer** (default; no external calls or model downloads) with deterministic fallback phrasing.
 
 ---
 
@@ -95,9 +101,16 @@ Design choices:
 
 ---
 
-## Deployment placeholder
-- TODO: add instructions for Streamlit Community Cloud + container registry workflow.
-- TODO: include `helm/` or Terraform snippet if deploying behind an API.
+## Deploy to Streamlit Community Cloud
+1. Fork/clone this repo to your GitHub account.
+2. In Streamlit Community Cloud, create a new app pointing to the repo + branch. Set the main file to `src/app.py`.
+3. Leave `requirements.txt` as-is (lightweight, demo-safe). No system packages are required.
+4. In **Secrets**, add the free demo defaults:
+   - `RAG_DEMO_MODE=1`
+   - `RAG_DISABLE_DENSE=1` (skip dense model downloads)
+   - `RAG_MODELS__LLM_PROVIDER=fallback`
+5. (Optional) Add `OPENAI_API_KEY` to enable OpenAI answers, and `RAG_APP__DEFAULT_RETRIEVER=hybrid` if you want dense/hybrid retrieval after precomputing embeddings offline.
+6. Deploy. The top-of-page status pills will confirm demo mode, lexical retrieval, and the lightweight summarizer when no API key is present.
 
 ---
 

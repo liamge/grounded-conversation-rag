@@ -24,7 +24,7 @@ import streamlit as st
 
 # Support running via `streamlit run src/app.py` (script) or as a package module.
 try:  # pragma: no cover - import guard for Streamlit execution style
-    from .config import Settings
+    from .config import Settings, is_truthy_env
     from .pipeline import PipelineResult, RAGPipeline
     from .schemas import Chunk, GeneratedAnswer, QueryTrace, RetrievalResult, StageTimings
 except ImportError:  # pragma: no cover
@@ -33,7 +33,7 @@ except ImportError:  # pragma: no cover
     PROJECT_ROOT = Path(__file__).resolve().parents[1]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.append(str(PROJECT_ROOT))
-    from src.config import Settings  # type: ignore
+    from src.config import Settings, is_truthy_env  # type: ignore
     from src.pipeline import PipelineResult, RAGPipeline  # type: ignore
     from src.schemas import Chunk, GeneratedAnswer, QueryTrace, RetrievalResult, StageTimings  # type: ignore
 
@@ -128,18 +128,23 @@ def _default_queries() -> List[str]:
     ]
 
 
-_DISABLE_DENSE = os.getenv("RAG_DISABLE_DENSE", "").lower() in {"1", "true", "yes"}
+_DEMO_MODE = is_truthy_env("RAG_DEMO_MODE")
+
+
+def _dense_disabled() -> bool:
+    return _DEMO_MODE or is_truthy_env("RAG_DISABLE_DENSE")
 _ALL_RETRIEVAL_LABELS: Dict[str, str] = {
     "Hybrid (lexical + dense)": "hybrid",
     "BM25 (lexical)": "bm25",
     "TF-IDF (lexical)": "tfidf",
     "Dense (MiniLM embeddings)": "dense",
 }
-RETRIEVAL_LABELS: Dict[str, str] = (
-    {label: name for label, name in _ALL_RETRIEVAL_LABELS.items() if name in {"bm25", "tfidf"}}
-    if _DISABLE_DENSE
-    else _ALL_RETRIEVAL_LABELS
-)
+
+
+def _retrieval_labels() -> Dict[str, str]:
+    if _dense_disabled():
+        return {label: name for label, name in _ALL_RETRIEVAL_LABELS.items() if name in {"bm25", "tfidf"}}
+    return _ALL_RETRIEVAL_LABELS
 _API_URL = os.getenv("RAG_API_URL", "").strip()
 _USE_REMOTE_API = bool(_API_URL)
 _API_TIMEOUT = float(os.getenv("RAG_API_TIMEOUT", "30"))
@@ -167,6 +172,47 @@ def _history_frame() -> pd.DataFrame:
     if not history:
         return pd.DataFrame(columns=["query", "latency_ms", "retriever", "num_citations"])
     return pd.DataFrame(history)
+
+
+def _mode_badges(settings: Settings) -> List[str]:
+    badges: List[str] = []
+    provider = (settings.models.llm_provider or "fallback").lower()
+    api_key = bool(os.getenv("OPENAI_API_KEY"))
+    demo_flag = settings.demo_mode or _DEMO_MODE
+    prefer_openai = api_key and not demo_flag and provider in {"openai", "fallback", "demo", "extractive"}
+
+    if demo_flag:
+        badges.append("Demo mode (lightweight)")
+
+    badges.append("Lexical retrieval" if _dense_disabled() else "Hybrid retrieval")
+
+    if prefer_openai:
+        badges.append("OpenAI generator")
+    elif provider in {"local", "transformers", "hf"}:
+        badges.append("Local tiny model (opt-in)")
+    else:
+        badges.append("Lightweight summarizer")
+
+    if not prefer_openai:
+        badges.append("No external API required")
+
+    return badges
+
+
+def render_mode_banner(settings: Settings) -> None:
+    badges = _mode_badges(settings)
+    if not badges:
+        return
+
+    badge_html = " ".join(f"<span class='pill'>{label}</span>" for label in badges)
+    st.markdown(
+        f"""
+        <div style='margin-top:6px; margin-bottom:8px;'>
+            {badge_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -592,8 +638,9 @@ def render_search_tab(pipeline: Optional[RAGPipeline]) -> Optional[PipelineResul
         )
 
         col_a, col_b, col_c = st.columns([1, 1, 1])
+        retrieval_labels = _retrieval_labels()
         with col_a:
-            retriever_label = st.selectbox("Retrieval mode", list(RETRIEVAL_LABELS.keys()))
+            retriever_label = st.selectbox("Retrieval mode", list(retrieval_labels.keys()))
         with col_b:
             top_k = st.slider("Top-k", min_value=1, max_value=10, value=5)
         with col_c:
@@ -612,7 +659,7 @@ def render_search_tab(pipeline: Optional[RAGPipeline]) -> Optional[PipelineResul
                     if _USE_REMOTE_API:
                         result = _run_query_via_api(
                             query=query,
-                            retriever_name=RETRIEVAL_LABELS[retriever_label],
+                            retriever_name=retrieval_labels[retriever_label],
                             top_k=top_k,
                             use_reranker=use_reranker,
                         )
@@ -620,7 +667,7 @@ def render_search_tab(pipeline: Optional[RAGPipeline]) -> Optional[PipelineResul
                         assert pipeline is not None
                         result = pipeline.run(
                             query=query,
-                            retriever_name=RETRIEVAL_LABELS[retriever_label],
+                            retriever_name=retrieval_labels[retriever_label],
                             top_k=top_k,
                             use_reranker=use_reranker,
                         )
@@ -738,6 +785,9 @@ def render_evaluation_tab(pipeline: Optional[RAGPipeline]) -> None:
 def main() -> None:
     st.title("Grounded Conversation RAG")
     st.caption("Hybrid retrieval + grounded answering with portfolio-friendly UI.")
+
+    settings = get_settings()
+    render_mode_banner(settings)
 
     if _USE_REMOTE_API:
         st.info(f"Using remote RAG API at: `{_API_URL}`")

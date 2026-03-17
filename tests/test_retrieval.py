@@ -111,10 +111,10 @@ def test_hybrid_fusion_prefers_weighted_scores():
 def test_factory_builds_default_hybrid():
     settings = Settings()
     retriever = build_retriever_from_config(settings)
-    assert isinstance(retriever, HybridRetriever)
+    assert isinstance(retriever, BM25Retriever)
 
 
 def test_factory_accepts_name_override():
     settings = Settings()
-    retriever = build_retriever_from_config(settings, retriever_name="bm25")
-    assert isinstance(retriever, BM25Retriever)
+    retriever = build_retriever_from_config(settings, retriever_name="hybrid")
+    assert isinstance(retriever, HybridRetriever)

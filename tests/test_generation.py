@@ -1,4 +1,5 @@
-from src.generation import assemble_context_with_budget
+from src.config import Settings
+from src.generation import assemble_context_with_budget, build_generator, generate_answer, ExtractiveDemoGenerator
 from src.schemas import Chunk, RetrievalResult
 
 
@@ -57,3 +58,27 @@ def test_empty_input_returns_empty_context() -> None:
     assert meta["used_tokens"] == 0
     assert not meta["truncated_chunks"]
     assert not meta["dropped_chunks"]
+
+
+def test_generate_uses_extractive_demo_when_no_keys(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    settings = Settings()
+    settings.models.llm_provider = "openai"
+
+    generator = build_generator(settings)
+
+    assert isinstance(generator, ExtractiveDemoGenerator)
+
+
+def test_extractive_demo_outputs_citations(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    settings = Settings()
+    retrieved = [
+        _res("chunk_a", "First chunk about the pipeline and retrieval scoring."),
+        _res("chunk_b", "Another section explaining evaluation metrics and latency."),
+    ]
+
+    answer = generate_answer("How is retrieval scored?", retrieved, settings=settings)
+
+    assert answer.citations
+    assert "Grounded summary" in answer.answer
