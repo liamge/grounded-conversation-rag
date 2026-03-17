@@ -6,6 +6,7 @@ Portfolio‑ready RAG system that ingests internal conversations + policies, run
 
 ## Quickstart (reproducible)
 - `python -m venv .venv && source .venv/bin/activate`
+- Use Python 3.10–3.11 (Streamlit Cloud reads `runtime.txt`; locally, create a 3.11 venv).
 - `pip install -e .` for the lightweight/demo stack (lexical retrieval + extractive summarizer).
 - Add extras when you want heavier features: `pip install -e ".[dense,local_llm,api,eval,dev]"`.
 - Demo-first defaults: `export RAG_DEMO_MODE=1 RAG_DISABLE_DENSE=1 RAG_MODELS__LLM_PROVIDER=fallback` (mirrors Streamlit Cloud).
