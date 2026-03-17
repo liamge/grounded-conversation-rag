@@ -122,6 +122,7 @@ def load_eval_runs(
 
 def _default_queries() -> List[str]:
     return [
+        "What is the refund and credit policy?",
         "How does the pipeline chunk documents before retrieval?",
         "What datasets does this repo ship with?",
         "Explain how hybrid retrieval is implemented here.",
